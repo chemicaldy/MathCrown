@@ -1,1 +1,1 @@
-# MathChamp
+# MathCrown
