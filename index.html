@@ -37,6 +37,275 @@
 <meta name="application-name" content="MathCrown">
 
 <!-- ── FONTS ── -->
+  <script src="https://js.stripe.com/v3/">
+
+function submitParentSignupThenCheckout(){
+  // After signup, open checkout for selected plan
+  var selectedPlan = document.querySelector(".plan-card.sel");
+  var planName = selectedPlan ? selectedPlan.querySelector(".plan-name").textContent.toLowerCase() : "premium";
+  var planKey = planName.indexOf("family") > -1 ? "family" : planName.indexOf("max") > -1 ? "max" : "premium";
+  submitParentSignup().then(function(){
+    setTimeout(function(){ openCheckout(planKey); }, 500);
+  }).catch(function(){});
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STRIPE PAYMENT INTEGRATION
+// Replace STRIPE_PUBLISHABLE_KEY with your key from stripe.com/dashboard
+// ═══════════════════════════════════════════════════════════════
+
+var STRIPE_PUBLISHABLE_KEY = "pk_live_YOUR_KEY_HERE"; // ← Replace this
+var STRIPE_PLANS = {
+  premium: {
+    name: "Premium Plan",
+    price: "$9.99/month",
+    priceId: "price_YOUR_PREMIUM_PRICE_ID",  // ← From Stripe Dashboard
+    features: "✅ Unlimited challenges · ✅ Prize redemption · ✅ Tournament entry · ✅ Full parent dashboard · ✅ Weekly leaderboard prizes"
+  },
+  family: {
+    name: "Family Plan",
+    price: "$14.99/month",
+    priceId: "price_YOUR_FAMILY_PRICE_ID",   // ← From Stripe Dashboard
+    features: "✅ Everything in Premium · ✅ Up to 4 children · ✅ Family leaderboard · ✅ Shared prize wallet · ✅ Priority support"
+  },
+  max: {
+    name: "Max + AI Plan",
+    price: "$19.99/month",
+    priceId: "price_YOUR_MAX_PRICE_ID",      // ← From Stripe Dashboard
+    features: "✅ Everything in Family · ✅ Unlimited AI Tutor Axiom · ✅ AI-generated practice sets · ✅ Advanced analytics · ✅ Early access to new features"
+  }
+};
+
+var stripeInstance = null;
+var stripeCardElement = null;
+var currentPlanKey = "premium";
+
+// Initialize Stripe when needed (lazy load)
+function getStripe() {
+  if (!stripeInstance) {
+    if (typeof Stripe === "undefined") {
+      showToast("Payment system loading... try again in a moment.");
+      return null;
+    }
+    stripeInstance = Stripe(STRIPE_PUBLISHABLE_KEY);
+  }
+  return stripeInstance;
+}
+
+// Open checkout for a specific plan
+function openCheckout(planKey) {
+  planKey = planKey || "premium";
+  currentPlanKey = planKey;
+  var plan = STRIPE_PLANS[planKey];
+  if (!plan) plan = STRIPE_PLANS.premium;
+
+  // Set plan details in modal
+  var nameEl = document.getElementById("checkout-plan-name");
+  var priceEl = document.getElementById("checkout-plan-price");
+  var featEl  = document.getElementById("checkout-features");
+  if (nameEl) nameEl.textContent = plan.name;
+  if (priceEl) priceEl.textContent = plan.price + " · 14-day free trial · Cancel anytime";
+  if (featEl) {
+    var items = plan.features.split(" · ");
+    featEl.innerHTML = items.map(function(f){ return "<div style='padding:2px 0'>" + f + "</div>"; }).join("");
+  }
+
+  // Pre-fill email if user is logged in
+  var emailEl = document.getElementById("checkout-email");
+  if (emailEl && S && S.email) emailEl.value = S.email;
+  var nameInput = document.getElementById("checkout-name");
+  if (nameInput && S && S.name) nameInput.value = S.name;
+
+  // Reset states
+  document.getElementById("checkout-success").style.display = "none";
+  var formEls = document.querySelectorAll("#modal-checkout input, #checkout-submit-btn, #checkout-features, .checkout-form-area");
+  formEls.forEach(function(el){ el.style.display = ""; });
+
+  // Show modal
+  var modal = document.getElementById("modal-checkout");
+  if (modal) modal.style.display = "flex";
+
+  // Mount Stripe card element
+  setTimeout(function() {
+    var stripe = getStripe();
+    if (!stripe) return;
+    var elements = stripe.elements({
+      appearance: {
+        theme: "night",
+        variables: {
+          colorPrimary: "#FFD93D",
+          colorBackground: "rgba(255,255,255,0.06)",
+          colorText: "#F0F6FF",
+          colorDanger: "#FF6B6B",
+          fontFamily: "Nunito, sans-serif",
+          borderRadius: "12px",
+          spacingUnit: "4px"
+        }
+      }
+    });
+    if (stripeCardElement) {
+      try { stripeCardElement.destroy(); } catch(e) {}
+    }
+    stripeCardElement = elements.card({
+      style: {
+        base: {
+          color: "#F0F6FF",
+          fontFamily: "Nunito, sans-serif",
+          fontSize: "15px",
+          "::placeholder": { color: "rgba(240,246,255,0.35)" }
+        },
+        invalid: { color: "#FF6B6B" }
+      }
+    });
+    var mountEl = document.getElementById("stripe-card-element");
+    if (mountEl) {
+      stripeCardElement.mount(mountEl);
+      stripeCardElement.on("change", function(event) {
+        var errEl = document.getElementById("stripe-card-errors");
+        if (errEl) errEl.textContent = event.error ? event.error.message : "";
+        if (mountEl) mountEl.style.borderColor = event.error ? "#FF6B6B" : "rgba(255,255,255,0.12)";
+      });
+      stripeCardElement.on("focus", function(){ if(mountEl) mountEl.style.borderColor = "rgba(255,217,61,0.5)"; });
+      stripeCardElement.on("blur",  function(){ if(mountEl) mountEl.style.borderColor = "rgba(255,255,255,0.12)"; });
+    }
+  }, 100);
+}
+
+function closeCheckout() {
+  var modal = document.getElementById("modal-checkout");
+  if (modal) modal.style.display = "none";
+  if (stripeCardElement) {
+    try { stripeCardElement.destroy(); } catch(e) {}
+    stripeCardElement = null;
+  }
+}
+
+// Handle payment submission
+async function submitCheckout() {
+  var stripe = getStripe();
+  if (!stripe || !stripeCardElement) {
+    showToast("Payment not ready — please try again.");
+    return;
+  }
+
+  var name  = (document.getElementById("checkout-name")  || {}).value || "";
+  var email = (document.getElementById("checkout-email") || {}).value || "";
+  var errEl = document.getElementById("stripe-card-errors");
+
+  if (!name.trim()) {
+    if (errEl) errEl.textContent = "Please enter the name on your card.";
+    return;
+  }
+  if (!email.trim() || email.indexOf("@") < 0) {
+    if (errEl) errEl.textContent = "Please enter a valid email address.";
+    return;
+  }
+
+  // Show spinner
+  var btn  = document.getElementById("checkout-submit-btn");
+  var text = document.getElementById("checkout-btn-text");
+  var spin = document.getElementById("checkout-spinner");
+  if (btn)  btn.disabled = true;
+  if (text) text.textContent = "Processing...";
+  if (spin) spin.style.display = "block";
+  if (errEl) errEl.textContent = "";
+
+  try {
+    // Step 1: Create PaymentMethod
+    var result = await stripe.createPaymentMethod({
+      type: "card",
+      card: stripeCardElement,
+      billing_details: { name: name, email: email }
+    });
+
+    if (result.error) {
+      if (errEl) errEl.textContent = result.error.message;
+      if (btn)  btn.disabled = false;
+      if (text) text.textContent = "🔒 Start Free Trial";
+      if (spin) spin.style.display = "none";
+      return;
+    }
+
+    // Step 2: Send to your backend to create the subscription
+    // IMPORTANT: You need a backend endpoint (Firebase Cloud Function or server)
+    // Replace this URL with your actual endpoint once deployed
+    var response = await fetch("https://YOUR-BACKEND.com/create-subscription", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        paymentMethodId: result.paymentMethod.id,
+        email: email,
+        name: name,
+        planId: STRIPE_PLANS[currentPlanKey].priceId,
+        uid: window.auth && window.auth.currentUser ? window.auth.currentUser.uid : null
+      })
+    });
+
+    if (!response.ok) throw new Error("Server error");
+    var subscription = await response.json();
+
+    if (subscription.status === "active" || subscription.status === "trialing") {
+      // Payment/trial started — show success
+      showCheckoutSuccess(currentPlanKey);
+    } else if (subscription.clientSecret) {
+      // 3D Secure required
+      var confirmResult = await stripe.confirmCardPayment(subscription.clientSecret);
+      if (confirmResult.error) {
+        if (errEl) errEl.textContent = confirmResult.error.message;
+      } else {
+        showCheckoutSuccess(currentPlanKey);
+      }
+    }
+  } catch(err) {
+    if (errEl) errEl.textContent = "Something went wrong. Please try again or contact support@mymathcrown.com";
+  } finally {
+    if (btn)  btn.disabled = false;
+    if (text) text.textContent = "🔒 Start Free Trial";
+    if (spin) spin.style.display = "none";
+  }
+}
+
+function showCheckoutSuccess(planKey) {
+  // Hide form, show success message
+  var formArea = document.querySelector("#modal-checkout .stripe-form-area");
+  var inputs = document.querySelectorAll("#modal-checkout input");
+  var submitBtn = document.getElementById("checkout-submit-btn");
+  var featEl = document.getElementById("checkout-features");
+  var trialBadge = document.querySelector("#modal-checkout .trial-badge");
+
+  inputs.forEach(function(el){ el.style.display = "none"; });
+  if (submitBtn) submitBtn.style.display = "none";
+  if (featEl) featEl.style.display = "none";
+
+  document.getElementById("checkout-success").style.display = "block";
+
+  // Save plan to Firestore
+  S.plan = planKey;
+  if (window.saveProgress) {
+    window.saveProgress(S.xp, S.coins, S.level, S.streak, S.linkCode);
+  }
+  showToast("🎉 Welcome to MathCrown " + STRIPE_PLANS[planKey].name + "!");
+}
+
+function activatePremium() {
+  S.plan = currentPlanKey;
+  // Unlock premium features in UI
+  showToast("👑 Premium features unlocked!");
+  renderHome();
+}
+
+// ─── Hook up all pricing buttons to real checkout ───────────────
+function upgradeToPlan(planKey) {
+  if (!S.name) {
+    // Not logged in — open parent signup first
+    showToast("Please sign in or create an account first!");
+    openModal("parent");
+    return;
+  }
+  openCheckout(planKey);
+}
+
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@400;600;700;800;900&family=Baloo+2:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -1278,7 +1547,7 @@ body{
           <li>✅ Unlimited MathCoins earning</li>
           <li>❌ AI Tutor Axiom</li>
         </ul>
-        <button class="btn btn-sun" style="width:100%" onclick="openModal('parent')">Start Premium</button>
+        <button class="btn btn-sun" style="width:100%" onclick="upgradeToPlan('premium')">Start Premium</button>
         <div style="font-size:11px;color:var(--text2);text-align:center;margin-top:8px">14-day free trial · Cancel anytime</div>
       </div>
       <div class="price-card">
@@ -2101,9 +2370,15 @@ body{
 
       <div class="wallet-hero">
         <div class="wallet-bg">💰</div>
+        <div style="font-size:11px;letter-spacing:1px;color:rgba(255,217,61,0.7);margin-bottom:4px" id="wallet-plan-badge">FREE PLAN</div>
         <div class="wallet-label">MathCoins Balance</div>
         <div class="wallet-bal" id="wallet-coins">0</div>
         <div class="wallet-sub" id="wallet-sub">Earn MathCoins by playing! · Parent-managed · Never expires</div>
+        <div id="wallet-upgrade-cta" style="margin-top:10px">
+          <button onclick="upgradeToPlan('premium')" class="btn btn-sun btn-sm" style="border-radius:50px;padding:8px 20px">
+            ⭐ Upgrade to Premium — Redeem Prizes
+          </button>
+        </div>
         <div class="wallet-actions">
           <button class="btn btn-sun btn-sm" onclick="showToast('🎁 Opening prize store...')">🎁 Redeem Prizes</button>
           <button class="btn btn-ghost btn-sm" onclick="showToast('📊 Earnings history...')">📜 History</button>
@@ -2281,6 +2556,7 @@ body{
 <!-- TOAST -->
 <div class="toast" id="toast">✅</div>
 
+<script src="question_bank.js"></script>
 <script>
 // MathCrown v1.0 - K-12 Competitive Math Platform
 // Zero mixed quotes, zero multiline strings, zero duplicates
@@ -2923,9 +3199,19 @@ async function signupStudent(){
       var signupBtn=document.querySelector("#tab-student .btn-sun");
       if(signupBtn){ signupBtn.textContent="Creating account..."; signupBtn.disabled=true; }
       await window.firebaseSignUp(email, password, fullName, "student", gr);
-      var linkCode=Math.floor(100000+Math.random()*900000).toString();
-      S.linkCode=linkCode;
-      try{ localStorage.setItem("mc_linkcode_"+email.toLowerCase().replace(/[^a-z0-9]/g,""), linkCode); }catch(e){}
+      // linkCode is now saved in Firestore by firebaseSignUp
+      // Load it back so S.linkCode is set correctly
+      try{
+        var savedData = await window.loadProgress();
+        if(savedData && savedData.linkCode){
+          S.linkCode = savedData.linkCode;
+        } else {
+          // Fallback: generate locally if load fails
+          S.linkCode = Math.floor(100000+Math.random()*900000).toString();
+        }
+      }catch(e){
+        S.linkCode = Math.floor(100000+Math.random()*900000).toString();
+      }
       closeModal();
       registerPlayer(fullName, gr+"th");
       saveSession();
@@ -3049,7 +3335,20 @@ async function loginStudent(){
     try{
       await window.firebaseLogin(email, password);
       var data=await window.loadProgress();
-      if(data){ S.xp=data.xp||0; S.level=data.level||1; S.streak=data.streak||0; S.coins=data.coins||0; fn=data.displayName||fn; }
+      if(data){
+        S.xp=data.xp||0; S.level=data.level||1;
+        S.streak=data.streak||0; S.coins=data.coins||0;
+        fn=data.displayName||fn;
+        // Restore linkCode from Firestore
+        if(data.linkCode){
+          S.linkCode=data.linkCode;
+        } else {
+          // Existing users: generate and save linkCode now
+          var newCode=Math.floor(100000+Math.random()*900000).toString();
+          S.linkCode=newCode;
+          try{ await window.saveProgress(S.xp,S.coins,S.level,S.streak,newCode); }catch(e){}
+        }
+      }
       closeLoginModal();
       enterApp(fn, (parseInt(gr)||7)+"th Grade", parseInt(gr)||7, false);
       showToast("Welcome back, "+fn.split(" ")[0]+"! Progress loaded! 🎉");
@@ -3399,12 +3698,25 @@ window.botBattleActive = false;
 
 // Pick a question for the battle
 window.pickBattleQuestion = function(){
-  var band = QUESTION_BANK[gradeBand(S.gradeNum)];
+  var gradeNum = S.gradeNum || 7;
+  var band = QUESTION_BANK[gradeBand(gradeNum)];
+  if(!band){ band = QUESTION_BANK["grades_6_8"]; }
   var topics = Object.keys(band);
-  var topic = topics[Math.floor(Math.random()*topics.length)];
-  var pool = band[topic];
-  var q = pool[Math.floor(Math.random()*pool.length)];
-  return { q: q.q, opts: q.opts, a: q.a };
+  // Try up to 20 times to find unused question
+  for(var att=0; att<20; att++){
+    var topic = topics[Math.floor(Math.random()*topics.length)];
+    var pool = band[topic];
+    var qObj = pool[Math.floor(Math.random()*pool.length)];
+    if(!USED_QUESTIONS.has(qObj.q)){
+      USED_QUESTIONS.add(qObj.q);
+      // q.a = answer options array, q.c = correct index
+      return { q: qObj.q, opts: qObj.a, a: qObj.a[qObj.c] };
+    }
+  }
+  // Fallback — just pick random
+  var topic = topics[0];
+  var qObj = band[topic][0];
+  return { q: qObj.q, opts: qObj.a, a: qObj.a[qObj.c] };
 };
 
 // Render live players in Challenge Arena
@@ -4720,12 +5032,15 @@ document.addEventListener("DOMContentLoaded",function(){
 
   window.firebaseSignUp = async function(email, password, displayName, role, grade) {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
+    // Generate permanent 6-digit link code
+    const linkCode = Math.floor(100000 + Math.random() * 900000).toString();
     await setDoc(doc(db, "users", cred.user.uid), {
       name: displayName,
       displayName: displayName,
       email: email,
       role: role,
       grade: grade || "",
+      linkCode: linkCode,
       xp: 0, coins: 0, level: 1, streak: 0,
       createdAt: new Date()
     });
@@ -4739,10 +5054,12 @@ document.addEventListener("DOMContentLoaded",function(){
 
   window.firebaseLogout = function() { return signOut(auth); };
 
-  window.saveProgress = async function(xp, coins, level, streak) {
+  window.saveProgress = async function(xp, coins, level, streak, linkCode) {
     const user = auth.currentUser;
     if (!user) return;
-    await updateDoc(doc(db, "users", user.uid), { xp, coins, level, streak });
+    const upd = { xp, coins, level, streak };
+    if (linkCode) upd.linkCode = linkCode;
+    await updateDoc(doc(db, "users", user.uid), upd);
   };
 
   window.loadProgress = async function() {
@@ -5028,10 +5345,12 @@ document.addEventListener("DOMContentLoaded",function(){
 
   window.firebaseLogout = function() { return signOut(auth); };
 
-  window.saveProgress = async function(xp, coins, level, streak) {
+  window.saveProgress = async function(xp, coins, level, streak, linkCode) {
     const user = auth.currentUser;
     if (!user) return;
-    await updateDoc(doc(db, "users", user.uid), { xp, coins, level, streak });
+    const upd = { xp, coins, level, streak };
+    if (linkCode) upd.linkCode = linkCode;
+    await updateDoc(doc(db, "users", user.uid), upd);
   };
 
   window.loadProgress = async function() {
