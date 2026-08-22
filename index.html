@@ -2557,7 +2557,7 @@ body{
 <!-- TOAST -->
 <div class="toast" id="toast">✅</div>
 
-<script src="question_bank.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/chemicaldy/MathCrown@main/question_bank.js"></script>
 <script>
 // MathCrown v1.0 - K-12 Competitive Math Platform
 // Zero mixed quotes, zero multiline strings, zero duplicates
@@ -4674,15 +4674,18 @@ document.addEventListener("DOMContentLoaded",function(){
   });
 });
 // Verify question bank loaded after 2 seconds
-setTimeout(function(){
-  if(!window.QUESTION_BANK){
-    console.error("CRITICAL: question_bank.js not loaded. Upload it to GitHub root.");
-  } else {
+// Check question bank loaded — retry up to 10 seconds
+(function checkBank(attempts){
+  if(window.QUESTION_BANK && Object.keys(window.QUESTION_BANK).length >= 5){
     var total=0;
     Object.values(QUESTION_BANK).forEach(function(t){Object.values(t).forEach(function(a){total+=a.length;});});
     console.log("✅ Question bank: "+total+" questions loaded");
+  } else if(attempts > 0){
+    setTimeout(function(){ checkBank(attempts-1); }, 1000);
+  } else {
+    console.warn("Question bank still loading — page may need refresh.");
   }
-},2000);
+})(10);
 </script>
 <!-- ═══════════════ MUSIC PLAYER ═══════════════ -->
 <!-- All tracks from Pixabay.com (royalty-free, no attribution required) -->
