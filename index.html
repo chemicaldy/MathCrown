@@ -4673,6 +4673,16 @@ document.addEventListener("DOMContentLoaded",function(){
     document.removeEventListener("click",onFirstClick);
   });
 });
+// Verify question bank loaded after 2 seconds
+setTimeout(function(){
+  if(!window.QUESTION_BANK){
+    console.error("CRITICAL: question_bank.js not loaded. Upload it to GitHub root.");
+  } else {
+    var total=0;
+    Object.values(QUESTION_BANK).forEach(function(t){Object.values(t).forEach(function(a){total+=a.length;});});
+    console.log("✅ Question bank: "+total+" questions loaded");
+  }
+},2000);
 </script>
 <!-- ═══════════════ MUSIC PLAYER ═══════════════ -->
 <!-- All tracks from Pixabay.com (royalty-free, no attribution required) -->
