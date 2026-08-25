@@ -26,6 +26,7 @@
     "@firebase/rules-unit-testing": "^3.0.4",
     "eslint": "^9.9.0",
     "firebase-tools": "^13.35.1",
+    "playwright": "^1.62.1",
     "vite": "^5.4.8",
     "vitest": "^2.1.9"
   }
