@@ -4,6 +4,7 @@
   import { getFirestore, connectFirestoreEmulator, doc, setDoc, getDoc, updateDoc, deleteDoc,
            collection, query, orderBy, limit, onSnapshot, where, getDocs, serverTimestamp, addDoc }
     from "firebase/firestore";
+  import { getFunctions, connectFunctionsEmulator, httpsCallable } from "firebase/functions";
 
   const firebaseConfig = {
     apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -17,25 +18,32 @@
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const db = getFirestore(app);
+  const functions = getFunctions(app);
 
   if (import.meta.env.VITE_USE_EMULATORS === "true") {
     connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
     connectFirestoreEmulator(db, "127.0.0.1", 8080);
+    connectFunctionsEmulator(functions, "127.0.0.1", 5001);
   }
   window.auth = auth;
   window.db = db;
 
+  // Thin callable-invocation helper for the non-module app code.
+  window.callFn = async function(name, data) {
+    const res = await httpsCallable(functions, name)(data);
+    return res.data;
+  };
+
   window.firebaseSignUp = async function(email, password, displayName, role, grade) {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
-    // Generate permanent 6-digit link code
-    const linkCode = Math.floor(100000 + Math.random() * 900000).toString();
+    // linkCode is assigned server-side by the onUserCreated function —
+    // security rules deny it (and all progress fields) as client writes.
     await setDoc(doc(db, "users", cred.user.uid), {
       name: displayName,
       displayName: displayName,
       email: email,
       role: role,
       grade: grade || "",
-      linkCode: linkCode,
       xp: 0, coins: 0, level: 1, streak: 0,
       createdAt: serverTimestamp()
     });
@@ -49,13 +57,9 @@
 
   window.firebaseLogout = function() { return signOut(auth); };
 
-  window.saveProgress = async function(xp, coins, level, streak, linkCode) {
-    const user = auth.currentUser;
-    if (!user) return;
-    const upd = { xp, coins, level, streak };
-    if (linkCode) upd.linkCode = linkCode;
-    await updateDoc(doc(db, "users", user.uid), upd);
-  };
+  // (saveProgress removed: direct client writes of xp/coins/level/streak are
+  //  denied by security rules. All progress flows through the recordSession
+  //  Cloud Function — see src/data/progress.js.)
 
   window.loadProgress = async function() {
     const user = auth.currentUser;
@@ -87,28 +91,33 @@
     const uid = user.uid;
     const presRef = doc(db, "presence", uid);
 
+    // Field set and constraints must match firestore.rules: name must equal
+    // users/{uid}.displayName and lastSeen must be a server timestamp.
+    // NOTE: does NOT touch inBattle — battle join/leave own that flag; the
+    // old heartbeat force-reset it to false every tick mid-battle.
     const writePresence = async () => {
       try {
         await setDoc(presRef, {
           uid,
           name: window.S ? window.S.name : "Player",
-          grade: window.S ? window.S.gradeNum : 0,
-          avatar: window.S ? (window.S.name||"P")[0].toUpperCase() : "P",
-          status: "online",
-          inBattle: false,
+          grade: window.S ? String(window.S.gradeNum || "") : "",
+          level: window.S ? (window.S.level || 1) : 1,
+          online: true,
           lastSeen: serverTimestamp()
         }, { merge: true });
-      } catch(e) {}
+      } catch(e) { console.warn("presence write failed:", e); }
     };
 
     await writePresence();
     clearInterval(presenceInterval);
-    presenceInterval = setInterval(writePresence, 25000);
+    // 60s heartbeat: presence writes are billed per write; 25s tripled cost
+    // for no accuracy gain given the 2-minute liveness window.
+    presenceInterval = setInterval(writePresence, 60000);
 
     window.addEventListener("beforeunload", () => {
       try {
-        setDoc(presRef, { status: "offline", lastSeen: serverTimestamp() }, { merge: true });
-      } catch(e) {}
+        setDoc(presRef, { online: false, lastSeen: serverTimestamp() }, { merge: true });
+      } catch(e) { /* page is closing */ }
     });
 
     window.listenOnlinePlayers();
@@ -127,7 +136,7 @@
   // ── ONLINE PLAYERS LISTENER ──────────────────────────────────
   window.listenOnlinePlayers = function() {
     const q = query(collection(db, "presence"),
-      where("status", "==", "online"));
+      where("online", "==", true));
     onSnapshot(q, snapshot => {
       const uid = auth.currentUser ? auth.currentUser.uid : null;
       const players = [];

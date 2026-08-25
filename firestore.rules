@@ -1,12 +1,228 @@
 rules_version = '2';
 
-// Placeholder: deny everything by default.
-// Phase 4 of the rebuild replaces this with the full ruleset
-// (users/presence/challenges/battles/leaderboard/entitlements/linkCodes).
-// Do NOT deploy to production until the old direct-write client is retired —
-// see docs/RUNBOOK.md cutover ordering.
+// MathCrown production Firestore rules (Phase 4 rebuild).
+//
+// Design notes:
+// - All privileged writes (progress, entitlements, link codes, leaderboard,
+//   sessions, plan/role changes) are performed by Cloud Functions via the
+//   Admin SDK, which bypasses these rules. Clients only get the narrow
+//   direct-write paths listed below.
+// - Custom claims: `role` ("parent" is set by a function; students have no
+//   role claim) and `plan` (set by the Stripe webhook function).
+// - The legacy client saveProgress path (direct writes of xp/coins/level/
+//   streak) is intentionally DENIED here; it is replaced by the
+//   recordSession function in a parallel phase.
+
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Display names: non-empty string, max 30 chars, no angle brackets
+    // (cheap XSS hardening — rendered names must never carry markup).
+    function validName(s) {
+      return s is string
+        && s.size() >= 1
+        && s.size() <= 30
+        && !s.matches('.*[<>].*');
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+
+    // True when the requester is the parent linked to the given student uid.
+    function isLinkedParent(uid) {
+      return isSignedIn() && userDoc(uid).parentUid == request.auth.uid;
+    }
+
+    // ---------- users/{uid} — profile + progress ----------
+
+    match /users/{uid} {
+      // Owner, or the linked parent (users/{uid}.parentUid == caller).
+      allow read: if isOwner(uid)
+        || (isSignedIn() && resource.data.parentUid == request.auth.uid);
+
+      // Self-service signup for students only. Progress counters must start
+      // at zero; parents are provisioned by a Cloud Function.
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasOnly([
+             'displayName', 'name', 'email', 'role', 'grade', 'avatar',
+             'createdAt', 'xp', 'coins', 'level', 'streak'
+           ])
+        && request.resource.data.role == 'student'
+        && request.resource.data.xp == 0
+        && request.resource.data.coins == 0
+        && request.resource.data.level == 1
+        && request.resource.data.streak == 0
+        && validName(request.resource.data.displayName)
+        && validName(request.resource.data.name)
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 254
+        && request.resource.data.grade is string
+        && request.resource.data.grade.size() <= 2;
+
+      // Owner may edit cosmetic profile fields only. Everything else —
+      // notably the legacy saveProgress shape {xp, coins, level, streak} —
+      // is function-only and DENIED here.
+      allow update: if isOwner(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'displayName', 'name', 'grade', 'avatar'
+           ])
+        && validName(request.resource.data.displayName)
+        && validName(request.resource.data.name)
+        && request.resource.data.grade is string
+        && request.resource.data.grade.size() <= 2;
+
+      // Deletion is function-only.
+      allow delete: if false;
+
+      // ---------- users/{uid}/sessions/{sid} — function-written history ----
+      match /sessions/{sid} {
+        allow read: if isOwner(uid) || isLinkedParent(uid);
+        allow write: if false;
+      }
+    }
+
+    // ---------- presence/{uid} — online heartbeat ----------
+
+    match /presence/{uid} {
+      allow read: if isSignedIn();
+
+      // Owner-only heartbeat. The advertised name must match the profile
+      // displayName (anti-spoofing) and lastSeen must be a server timestamp.
+      allow create, update: if isOwner(uid)
+        && request.resource.data.keys().hasOnly([
+             'uid', 'name', 'grade', 'level', 'lastSeen', 'online', 'inBattle'
+           ])
+        && request.resource.data.uid == request.auth.uid
+        && validName(request.resource.data.name)
+        && request.resource.data.name == userDoc(request.auth.uid).displayName
+        && request.resource.data.lastSeen == request.time;
+
+      allow delete: if isOwner(uid);
+    }
+
+    // ---------- challenges/{id} — PvP invitations ----------
+    //
+    // Two doc shapes share this collection, handled uniformly:
+    //   challenges/{toUid}            — invitation; recipient uid IS the id.
+    //   challenges/{fromUid}_notify   — accept notification written by the
+    //                                   acceptor TO the original sender; the
+    //                                   "recipient" is the uid prefixing the
+    //                                   id (the sender being notified).
+    // In both cases: recipient(id) = id minus an optional "_notify" suffix,
+    // and the sender/creator is data.fromUid.
+
+    function challengeRecipient(id) {
+      return id.replace('_notify$', '');
+    }
+
+    match /challenges/{challengeId} {
+      // Recipient (embedded in the id) or the sender may read.
+      allow read: if isSignedIn()
+        && (request.auth.uid == challengeRecipient(challengeId)
+            || resource.data.fromUid == request.auth.uid);
+
+      // Creator must be the sender (no spoofed fromUid), may not target
+      // themselves, and must write a well-formed pending doc stamped with
+      // the server time. Create-only-if-absent is inherent to Firestore.
+      allow create: if isSignedIn()
+        && request.resource.data.fromUid == request.auth.uid
+        && challengeRecipient(challengeId) != request.auth.uid
+        && request.resource.data.fromUid is string
+        && validName(request.resource.data.fromName)
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time;
+
+      // Only the recipient may respond, may only flip status, only once,
+      // and only from "pending" to "accepted"/"declined".
+      allow update: if isOwner(challengeRecipient(challengeId))
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status'])
+        && resource.data.status == 'pending'
+        && request.resource.data.status in ['accepted', 'declined'];
+
+      // Either party may clean up.
+      allow delete: if isSignedIn()
+        && (request.auth.uid == challengeRecipient(challengeId)
+            || resource.data.fromUid == request.auth.uid);
+    }
+
+    // ---------- battles/{battleId} — live PvP state ----------
+
+    match /battles/{battleId} {
+      allow read: if isSignedIn()
+        && (resource.data.p1Uid == request.auth.uid
+            || resource.data.p2Uid == request.auth.uid);
+
+      allow create: if isSignedIn()
+        && (request.resource.data.p1Uid == request.auth.uid
+            || request.resource.data.p2Uid == request.auth.uid);
+
+      // Participants may drive battle state but never reassign the seats.
+      allow update: if isSignedIn()
+        && (resource.data.p1Uid == request.auth.uid
+            || resource.data.p2Uid == request.auth.uid)
+        && request.resource.data.p1Uid == resource.data.p1Uid
+        && request.resource.data.p2Uid == resource.data.p2Uid;
+
+      allow delete: if isSignedIn()
+        && (resource.data.p1Uid == request.auth.uid
+            || resource.data.p2Uid == request.auth.uid);
+    }
+
+    // ---------- function-only collections ----------
+
+    // Public (to signed-in users) leaderboard, maintained by functions.
+    match /leaderboard/{uid} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Plan/entitlement mirror written by the Stripe webhook function.
+    match /entitlements/{uid} {
+      allow read: if isOwner(uid) || isLinkedParent(uid);
+      allow write: if false;
+    }
+
+    // Parent-link codes are resolved server-side only; never client-readable
+    // (a readable code collection would allow enumeration/hijack).
+    match /linkCodes/{code} {
+      allow read, write: if false;
+    }
+
+    // AI-tutor quota counters, maintained by functions.
+    match /tutorUsage/{uid} {
+      allow read: if isOwner(uid);
+      allow write: if false;
+    }
+
+    // Marketing waitlist: signed-in users may append one bounded row;
+    // nothing is readable or editable from the client.
+    match /waitlist/{entryId} {
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['name', 'email', 'grade'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 1
+        && request.resource.data.name.size() <= 100
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 254
+        && request.resource.data.grade is string
+        && request.resource.data.grade.size() <= 20;
+      allow read, update, delete: if false;
+    }
+
+    // ---------- everything else: deny ----------
+
     match /{document=**} {
       allow read, write: if false;
     }

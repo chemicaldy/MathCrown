@@ -1,6 +1,7 @@
 // MathCrown v1.0 - K-12 Competitive Math Platform
 // Zero mixed quotes, zero multiline strings, zero duplicates
 import { loadBank } from "./data/bank-loader.js";
+import { submitSession, flushQueue } from "./data/progress.js";
 
 window.MATHCHAMP_LOADED = true;
 
@@ -35,6 +36,41 @@ function escapeHtml(s){
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// Repaint every header/stat element that shows XP/coins/level/streak.
+function refreshStatsUI(){
+  var setEl=function(id,val){ var e=$$(id); if(e) e.textContent=val; };
+  setEl("home-coins",S.coins.toLocaleString()); setEl("wallet-coins",S.coins.toLocaleString());
+  setEl("xp-level-num",S.level); setEl("xp-nums-label",S.xp+" / "+S.level*500+" XP");
+  setEl("sb-ulevel","Level "+S.level+" - "+(S.level>=10?"Diamond":S.level>=7?"Gold":S.level>=4?"Silver":"Beginner"));
+  setEl("stat-streak",S.streak);
+  if(typeof S.wins==="number") setEl("stat-wins",String(S.wins));
+  var xpEl=$$("xp-prog"); if(xpEl) xpEl.style.width=Math.min(100,Math.round(S.xp/(S.level*500)*100))+"%";
+}
+
+// Single award path for every game mode. Applies an optimistic local update
+// for instant feedback, then submits the session to the recordSession Cloud
+// Function — the only writer of real progress — and reconciles with its
+// authoritative totals when the response lands. (Replaces the old code that
+// awarded once per question AND again per session, doubling XP/coins.)
+function awardSession(mode, sess, localXp, localCoins, extra){
+  S.xp+=localXp; S.coins+=localCoins; saveSession(); refreshStatsUI();
+  if(S.isPreview) return;
+  var payload={
+    mode: mode,
+    answers: (sess.answers||[]).slice(0,20),
+    durationMs: Math.max(1, Date.now()-(sess.startedAt||Date.now()))
+  };
+  if(extra&&extra.battleId) payload.battleId=extra.battleId;
+  submitSession(payload).then(function(res){
+    if(res&&res.totals){
+      S.xp=res.totals.xp; S.coins=res.totals.coins;
+      S.level=res.totals.level; S.streak=res.totals.streak;
+      if(typeof res.totals.wins==="number") S.wins=res.totals.wins;
+      saveSession(); refreshStatsUI();
+    }
+  });
 }
 
 // ── STATE ──────────────────────────────────────────────
@@ -94,12 +130,12 @@ function getRandQ(gradeN){
       // Reset if we've used too many (more than 80% of bank)
       var totalQ=0; topics.forEach(function(tp){ totalQ+=bank[tp].length; });
       if(USED_QUESTIONS.size > totalQ*0.8) USED_QUESTIONS.clear();
-      return {q:q.q, a:q.a, c:q.c, topic:t, src:"Question Bank", ai:false, explanation:""};
+      return {id:q.id, q:q.q, a:q.a, c:q.c, topic:t, src:"Question Bank", ai:false, explanation:""};
     }
   }
   // Fallback: return any question
   var t2=topics[0], q2=bank[t2][0];
-  return {q:q2.q, a:q2.a, c:q2.c, topic:t2, src:"Question Bank", ai:false, explanation:""};
+  return {id:q2.id, q:q2.q, a:q2.a, c:q2.c, topic:t2, src:"Question Bank", ai:false, explanation:""};
 }
 
 // ── DATA ───────────────────────────────────────────────
@@ -412,19 +448,15 @@ async function signupStudent(){
       var signupBtn=document.querySelector("#tab-student .btn-sun");
       if(signupBtn){ signupBtn.textContent="Creating account..."; signupBtn.disabled=true; }
       await window.firebaseSignUp(email, password, fullName, "student", gr);
-      // linkCode is now saved in Firestore by firebaseSignUp
-      // Load it back so S.linkCode is set correctly
-      try{
-        var savedData = await window.loadProgress();
-        if(savedData && savedData.linkCode){
-          S.linkCode = savedData.linkCode;
-        } else {
-          // Fallback: generate locally if load fails
-          S.linkCode = Math.floor(100000+Math.random()*900000).toString();
-        }
-      }catch(e){
-        S.linkCode = Math.floor(100000+Math.random()*900000).toString();
-      }
+      // The onUserCreated Cloud Function assigns the permanent linkCode
+      // moments after signup; poll the profile briefly to pick it up.
+      S.linkCode="";
+      (function pollLinkCode(tries){
+        window.loadProgress().then(function(d){
+          if(d&&d.linkCode){ S.linkCode=d.linkCode; var lc=$$("home-link-code"); if(lc) lc.textContent=d.linkCode; }
+          else if(tries>0) setTimeout(function(){ pollLinkCode(tries-1); },2000);
+        }).catch(function(e){ console.warn("linkCode poll failed:", e); });
+      })(5);
       closeModal();
       registerPlayer(fullName, gr+"th");
       saveSession();
@@ -555,19 +587,16 @@ async function loginStudent(){
       S.streak=data.streak||0; S.coins=data.coins||0;
       fn=data.displayName||data.name||fn;
       gradeNum=parseInt(data.grade)||gradeNum;
-      if(data.linkCode){
-        S.linkCode=data.linkCode;
-      } else {
-        // Existing users predating linkCode: generate and persist one now
-        var newCode=Math.floor(100000+Math.random()*900000).toString();
-        S.linkCode=newCode;
-        try{ await window.saveProgress(S.xp,S.coins,S.level,S.streak,newCode); }
-        catch(e){ console.warn("Could not persist linkCode:", e); }
-      }
+      // linkCode is server-assigned; accounts predating it get backfilled by
+      // the ops script (see docs/RUNBOOK.md) — never generated client-side.
+      S.linkCode=data.linkCode||"";
+      if(typeof data.wins==="number") S.wins=data.wins;
     }
     closeLoginModal();
     enterApp(fn, gradeLabel(gradeNum), gradeNum, false);
     showToast("Welcome back, "+fn.split(" ")[0]+"! Progress loaded! 🎉");
+    // Retry any sessions that finished while offline.
+    flushQueue().then(function(r){ if(r&&r.flushed) console.log("Flushed "+r.flushed+" queued sessions"); });
   }catch(e){
     var msg=e.message||"";
     if(msg.indexOf("invalid-credential")>-1||msg.indexOf("wrong-password")>-1) showToast("Wrong email or password. Please try again.");
@@ -682,6 +711,7 @@ async function loadTrivia(){
   while(qs.length<total) qs.push(getRandQ(S.gradeNum));
   session.qs=shuffle(qs).slice(0,total);
   session.idx=0; session.correct=0; session.loading=false;
+  session.answers=[]; session.startedAt=Date.now();
   renderQuestion();
 }
 
@@ -737,6 +767,7 @@ function renderQuestion(){
       var opts=document.querySelectorAll(".q-opt");
       opts.forEach(function(o,i){ if(i===q.c) o.classList.add("reveal"); o.disabled=true; });
       showToast("Time is up!");
+      if(session.answers) session.answers.push({id:q.id||null, sel:-1});
       session.idx++;
       setTimeout(renderQuestion,1800);
     }
@@ -747,7 +778,10 @@ function answerQ(sel,correct,btn){
   clearInterval(triviaTimer);
   document.querySelectorAll(".q-opt").forEach(function(o){ o.disabled=true; });
   var right=sel===correct;
-  if(right){ btn.classList.add("correct"); session.correct++; S.coins+=10; S.xp+=50; showToast("Correct! +10 MathCoins"); }
+  var curQ=session.qs[session.idx];
+  if(session.answers&&curQ) session.answers.push({id:curQ.id||null, sel:sel});
+  // Coins/XP are awarded once, at session end, via awardSession — not here.
+  if(right){ btn.classList.add("correct"); session.correct++; showToast("Correct! +10 MathCoins"); }
   else{ btn.classList.add("wrong"); var opts=document.querySelectorAll(".q-opt"); if(opts[correct]) opts[correct].classList.add("correct"); showToast("Not quite!"); }
   var q=session.qs[session.idx];
   if(q.explanation){
@@ -764,9 +798,7 @@ function showTriviaResult(){
   clearInterval(triviaTimer);
   var t=session.qs.length, c=session.correct, pct=Math.round(c/t*100);
   var coinsEarned=c*10+(c===t?25:0), xpEarned=c*50+(c===t?100:0);
-  S.coins+=coinsEarned; S.xp+=xpEarned;
-  saveSession();
-  var hc=$$("home-coins"); if(hc) hc.textContent=S.coins.toLocaleString();
+  awardSession("trivia", session, xpEarned, coinsEarned);
   var msg=pct===100?"Perfect!":pct>=70?"Great Job!":"Keep Going!";
   var arena=$$("trivia-arena"); if(!arena) return;
   var div=document.createElement("div"); div.className="result-card";
@@ -1260,7 +1292,8 @@ function startBattle(){
 }
 
 async function startBattleWith(name,emoji,bg,winRate){
-  var bs={opp:{name:name,emoji:emoji,winRate:winRate},myScore:0,oppScore:0,round:0,active:true,qs:[],timeLeft:30,timer:null};
+  var bs={opp:{name:name,emoji:emoji,winRate:winRate},myScore:0,oppScore:0,round:0,active:true,qs:[],timeLeft:30,timer:null,
+          answers:[],startedAt:Date.now()};
   S.battleState=bs;
   var ba=$$("battle-arena"); if(ba){ ba.style.display="block"; ba.scrollIntoView({behavior:"smooth",block:"nearest"}); }
   var setEl=function(id,v){ var e=$$(id); if(e) e.textContent=v; };
@@ -1287,6 +1320,7 @@ function nextBattleRound(bs){
     bs.timeLeft--; updateBTimer(bs);
     if(bs.timeLeft<=0){
       clearInterval(bs.timer);
+      if(bs.answers&&q) bs.answers.push({id:q.id||null, sel:-1});
       if(Math.random()<bs.opp.winRate){ bs.oppScore++; var os=$$("b-opp-score"); if(os) os.textContent=bs.oppScore; }
       bs.round++; setTimeout(function(){ nextBattleRound(bs); },800);
     }
@@ -1317,6 +1351,8 @@ function battleAnswer(sel,correct,btn,bs){
   clearInterval(bs.timer);
   var opts=document.querySelectorAll("#battle-q-wrap .q-opt");
   opts.forEach(function(o){ o.disabled=true; });
+  var bq=bs.qs[bs.round];
+  if(bs.answers&&bq) bs.answers.push({id:bq.id||null, sel:sel});
   if(sel===correct){
     btn.classList.add("correct"); bs.myScore++;
     var speedBonus = timeUsed <= 5 ? " 🚀 Speed Bonus!" : timeUsed <= 10 ? " ⚡ Fast!" : "";
@@ -1336,10 +1372,12 @@ function battleAnswer(sel,correct,btn,bs){
 
 function endBattle(bs){
   if(!bs) return;
-  clearInterval(bs.timer);
+  clearInterval(bs.timer); currentBattleTimer=null;
   var win=bs.myScore>bs.oppScore, tie=bs.myScore===bs.oppScore;
-  var xp=win?200:tie?100:50, coins=win?150:tie?75:25;
-  S.xp+=xp; S.coins+=coins; saveSession();
+  // Bot battles can't be server-verified as wins, so the award is based on
+  // graded answers only — same formula the server applies.
+  var xp=bs.myScore*30+20, coins=bs.myScore*6;
+  awardSession("battle", bs, xp, coins);
   var wrap=$$("battle-q-wrap"); if(!wrap) return;
   var msg=win?"Victory!":tie?"Draw!":"Keep Training!";
   var div=document.createElement("div"); div.style.textAlign="center"; div.style.padding="24px";
@@ -1650,10 +1688,11 @@ async function startPractice(topic){
   practiceSession={qs:[],idx:0,correct:0,loading:true};
   var wrap=$$("practice-q-wrap"); if(wrap) wrap.innerHTML="<div style='text-align:center;padding:32px'>Loading "+topic+" questions...</div>";
   var band=getBank()[gradeBand(S.gradeNum)];
-  var qs=(band[topic]||[]).map(function(q){ return {q:q.q,a:q.a,c:q.c,topic:topic,src:"Question Bank",ai:false,explanation:""}; });
+  var qs=(band[topic]||[]).map(function(q){ return {id:q.id,q:q.q,a:q.a,c:q.c,topic:topic,src:"Question Bank",ai:false,explanation:""}; });
   var aiQs=await genAIQuestions(S.gradeNum,3,"practice");
   if(aiQs) qs=qs.concat(aiQs);
   practiceSession.qs=shuffle(qs).slice(0,5); practiceSession.loading=false;
+  practiceSession.answers=[]; practiceSession.startedAt=Date.now();
   renderPracticeQ();
 }
 
@@ -1686,7 +1725,9 @@ function renderPracticeQ(){
     if(ptv<=0){
       clearInterval(practiceTimer);
       var opts=document.querySelectorAll("#p-opts .q-opt");
-      opts.forEach(function(o,i){ if(i===practiceSession.qs[practiceSession.idx].c) o.classList.add("reveal"); o.disabled=true; });
+      var pq=practiceSession.qs[practiceSession.idx];
+      opts.forEach(function(o,i){ if(i===pq.c) o.classList.add("reveal"); o.disabled=true; });
+      if(practiceSession.answers) practiceSession.answers.push({id:pq.id||null, sel:-1});
       practiceSession.idx++; setTimeout(renderPracticeQ,1600);
     }
   },1000);
@@ -1696,7 +1737,10 @@ function answerPractice(sel,correct,btn){
   clearInterval(practiceTimer);
   document.querySelectorAll("#p-opts .q-opt").forEach(function(o){ o.disabled=true; });
   var right=sel===correct;
-  if(right){ btn.classList.add("correct"); practiceSession.correct++; S.coins+=8; showToast("Correct! +8 MathCoins"); }
+  var pq=practiceSession.qs[practiceSession.idx];
+  if(practiceSession.answers&&pq) practiceSession.answers.push({id:pq.id||null, sel:sel});
+  // Coins are awarded once, at session end, via awardSession — not here.
+  if(right){ btn.classList.add("correct"); practiceSession.correct++; showToast("Correct! +8 MathCoins"); }
   else{ btn.classList.add("wrong"); var opts=document.querySelectorAll("#p-opts .q-opt"); if(opts[correct]) opts[correct].classList.add("correct"); }
   practiceSession.idx++; setTimeout(renderPracticeQ, right?1800:2400);
 }
@@ -1704,7 +1748,7 @@ function answerPractice(sel,correct,btn){
 function showPracticeResult(){
   clearInterval(practiceTimer);
   var c=practiceSession.correct, t=practiceSession.qs.length, pct=Math.round(c/t*100);
-  S.xp+=c*40; S.coins+=c*8; saveSession();
+  awardSession("practice", practiceSession, c*40, c*8);
   var wrap=$$("practice-q-wrap"); if(!wrap) return;
   var msg=pct===100?"Perfect!":pct>=70?"Great Job!":"Keep Going!";
   var div=document.createElement("div"); div.className="result-card";

@@ -32,6 +32,19 @@ export default [
     },
   },
   {
+    // Cloud Functions: Node runtime globals.
+    files: ["functions/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: "module",
+      globals: {
+        console: "readonly",
+        process: "readonly",
+        setTimeout: "readonly",
+      },
+    },
+  },
+  {
     // Legacy code extracted verbatim from the old index.html monolith.
     // Rewritten module-by-module in the Phase 3 refactor; until then it
     // references globals defined in index.html's inline script.

@@ -28,7 +28,9 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["tests/unit/**/*.test.js", "tests/functions/**/*.test.js"],
+    // tests/functions and tests/rules need live emulators — they run via
+    // `npm run test:functions` / `npm run test:rules`, not plain `npm test`.
+    include: ["tests/unit/**/*.test.js"],
     passWithNoTests: true,
   },
 });

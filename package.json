@@ -16,7 +16,8 @@
     "bank:validate": "node scripts/validate-bank.mjs",
     "bank:report": "node scripts/report-bank.mjs",
     "emulators": "firebase emulators:start",
-    "test:rules": "firebase emulators:exec --only firestore \"vitest run tests/rules\""
+    "test:rules": "firebase emulators:exec --only firestore --project demo-mathcrown \"vitest run -c tests/rules/vitest.config.js\"",
+    "test:functions": "firebase emulators:exec --only auth,firestore,functions --project demo-mathcrown \"vitest run -c tests/functions/vitest.config.js\""
   },
   "dependencies": {
     "firebase": "^10.14.1"
