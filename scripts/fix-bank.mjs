@@ -195,13 +195,19 @@ function candidateReplacements(baseText) {
       const swapped = Number(sw) * Math.sign(tok.value || 1);
       vals.push(swapped + (Math.abs(tok.value) - Math.trunc(Math.abs(tok.value))) * Math.sign(tok.value || 1));
     }
+    // tokens right after ":" are clock minutes: keep 2-digit format, 0-59
+    const isMinutes = tok.start > 0 && baseText[tok.start - 1] === ':' && /^\d{2}$/.test(tok.text);
     for (const v of vals) {
       if (!Number.isFinite(v)) continue;
-      const formatted = formatLike(v, tok.text);
+      let formatted = formatLike(v, tok.text);
       if (Number(formatted) === tok.value) continue;
       // avoid negative results for originally non-negative tokens (keeps ages,
       // counts, lengths plausible)
       if (tok.value >= 0 && Number(formatted) < 0) continue;
+      if (isMinutes) {
+        if (Number(formatted) < 0 || Number(formatted) > 59 || !Number.isInteger(Number(formatted))) continue;
+        formatted = formatted.padStart(2, '0');
+      }
       out.push(baseText.slice(0, tok.start) + formatted + baseText.slice(tok.end));
     }
   }
@@ -233,15 +239,21 @@ for (const band of Object.keys(bank)) {
         if (i === item.c) continue;
         const key = normalize(item.a[i]);
         if (!kept.has(key) && key !== '') { kept.add(key); continue; }
-        // regenerate this slot
+        // regenerate this slot — a candidate must not collide with any kept
+        // option NOR any current option text (so we never force a later,
+        // still-unique original distractor into regeneration)
+        const avoid = new Set([...kept, ...item.a.map(normalize)]);
         const seed = fnv1a(`${item.id}#${i}`);
         const candidates = candidateReplacements(item.a[i] === '' ? correctText : item.a[i]);
         let replacement = null;
         if (candidates.length > 0) {
+          // start within the first few (smallest, most plausible) perturbations
+          // — the hash only varies the pick, it doesn't jump to wild deltas
+          const start = seed % Math.min(candidates.length, 6);
           for (let k = 0; k < candidates.length; k++) {
-            const cand = candidates[(seed + k) % candidates.length];
+            const cand = candidates[(start + k) % candidates.length];
             const candKey = normalize(cand);
-            if (kept.has(candKey)) continue;
+            if (avoid.has(candKey)) continue;
             const candNum = soleNumber(cand);
             if (correctNum !== null && candNum !== null && Math.abs(candNum - correctNum) < 1e-9) continue;
             replacement = cand;
@@ -254,7 +266,7 @@ for (const band of Object.keys(bank)) {
           for (let k = 0; k < siblingPool.length; k++) {
             const cand = siblingPool[(seed + k) % siblingPool.length];
             const candKey = normalize(cand);
-            if (kept.has(candKey)) continue;
+            if (avoid.has(candKey)) continue;
             const candNum = soleNumber(cand);
             if (correctNum !== null && candNum !== null && Math.abs(candNum - correctNum) < 1e-9) continue;
             replacement = cand;
