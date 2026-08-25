@@ -20,8 +20,11 @@ function validate(data) {
   if (!data || typeof data !== "object") throw new HttpsError("invalid-argument", "Missing payload.");
   const { mode, answers, durationMs, battleId } = data;
   if (!MODES.has(mode)) throw new HttpsError("invalid-argument", "Unknown mode.");
-  if (!Array.isArray(answers) || answers.length < 1 || answers.length > MAX_ANSWERS) {
-    throw new HttpsError("invalid-argument", "answers must contain 1-" + MAX_ANSWERS + " entries.");
+  // Server-verified battles (battleId set) are awarded from the battle doc's
+  // outcome, so per-question answers are optional for them.
+  const minAnswers = mode === "battle" && battleId ? 0 : 1;
+  if (!Array.isArray(answers) || answers.length < minAnswers || answers.length > MAX_ANSWERS) {
+    throw new HttpsError("invalid-argument", "answers must contain " + minAnswers + "-" + MAX_ANSWERS + " entries.");
   }
   const seen = new Set();
   for (const a of answers) {

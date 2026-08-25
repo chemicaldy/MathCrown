@@ -141,31 +141,30 @@ function getRandQ(gradeN){
 // ── DATA ───────────────────────────────────────────────
 // QUESTION_BANK loaded externally from question_bank.js
 
-var OPPS = [
-  {n:"Lily M.",   gradeN:2,  band:1, tier:"Bronze",   meta:"2nd Grade - 12 Wins",  wr:"55% Win Rate", winRate:0.55, e:"L", bg:"linear-gradient(135deg,#cd7f32,#a06020)"},
-  {n:"Noah B.",   gradeN:3,  band:1, tier:"Silver",   meta:"3rd Grade - 28 Wins",  wr:"61% Win Rate", winRate:0.61, e:"N", bg:"linear-gradient(135deg,#c0c0c0,#909090)"},
-  {n:"Mia T.",    gradeN:4,  band:2, tier:"Silver",   meta:"4th Grade - 35 Wins",  wr:"63% Win Rate", winRate:0.63, e:"M", bg:"linear-gradient(135deg,#06d6a0,#4ecdc4)"},
-  {n:"Ethan R.",  gradeN:5,  band:2, tier:"Gold",     meta:"5th Grade - 52 Wins",  wr:"70% Win Rate", winRate:0.70, e:"E", bg:"linear-gradient(135deg,#ffd93d,#ff9f1c)"},
-  {n:"Riley M.",  gradeN:6,  band:3, tier:"Silver",   meta:"6th Grade - 43 Wins",  wr:"65% Win Rate", winRate:0.65, e:"R", bg:"linear-gradient(135deg,#4ecdc4,#06d6a0)"},
-  {n:"Jordan K.", gradeN:7,  band:3, tier:"Gold",     meta:"7th Grade - 89 Wins",  wr:"78% Win Rate", winRate:0.78, e:"J", bg:"linear-gradient(135deg,#f5c842,#ff9f1c)"},
-  {n:"Sam P.",    gradeN:7,  band:3, tier:"Gold",     meta:"7th Grade - 74 Wins",  wr:"71% Win Rate", winRate:0.71, e:"S", bg:"linear-gradient(135deg,#ff6b6b,#f15bb5)"},
-  {n:"Chris W.",  gradeN:8,  band:3, tier:"Platinum", meta:"8th Grade - 102 Wins", wr:"83% Win Rate", winRate:0.83, e:"C", bg:"linear-gradient(135deg,#9b5de5,#4ecdc4)"},
-  {n:"Dana R.",   gradeN:9,  band:4, tier:"Diamond",  meta:"9th Grade - 145 Wins", wr:"91% Win Rate", winRate:0.91, e:"D", bg:"linear-gradient(135deg,#4ecdc4,#2196f3)"},
-  {n:"Alex K.",   gradeN:10, band:4, tier:"Platinum", meta:"10th Grade - 118 Wins",wr:"86% Win Rate", winRate:0.86, e:"A", bg:"linear-gradient(135deg,#9b5de5,#f15bb5)"},
-  {n:"Morgan L.", gradeN:11, band:5, tier:"Diamond",  meta:"11th Grade - 201 Wins",wr:"94% Win Rate", winRate:0.94, e:"M", bg:"linear-gradient(135deg,#ffd93d,#9b5de5)"},
-  {n:"Taylor B.", gradeN:12, band:5, tier:"Legend",   meta:"12th Grade - 312 Wins",wr:"97% Win Rate", winRate:0.97, e:"T", bg:"linear-gradient(135deg,#ff6b6b,#ffd93d)"}
-];
+// (OPPS demo roster removed — opponents are real online players now.)
 
-var LB_DATA = [
-  {n:"Jordan K.", g:"7th", pts:5820, e:"J", chg:"+2", up:true},
-  {n:"Sam P.",    g:"7th", pts:5410, e:"S", chg:"+1", up:true},
-  {n:"Riley M.",  g:"7th", pts:5200, e:"R", chg:"0",  up:false},
-  {n:"Alex J.",   g:"7th", pts:3240, e:"A", chg:"+3", up:true},
-  {n:"Casey T.",  g:"7th", pts:3100, e:"C", chg:"-1", up:false},
-  {n:"Morgan L.", g:"7th", pts:2980, e:"M", chg:"+4", up:true},
-  {n:"Taylor B.", g:"7th", pts:2750, e:"T", chg:"-2", up:false},
-  {n:"Drew K.",   g:"7th", pts:2640, e:"D", chg:"+5", up:true}
-];
+// Live leaderboard data — fed by the `leaderboard` Firestore mirror via
+// startLiveLeaderboard(); empty until the listener delivers.
+var LB_LIVE = [];
+var lbUnsub = null;
+function startLiveLeaderboard(){
+  if(lbUnsub){ lbUnsub(); lbUnsub=null; }
+  if(!window.startLeaderboard || !window.auth || !window.auth.currentUser) return;
+  lbUnsub=window.startLeaderboard(function(leaders){
+    LB_LIVE=leaders||[];
+    renderMiniLB(); renderRoomLB(); updateMyRank();
+    var pg=$$("p-leaderboard");
+    if(pg&&pg.classList.contains("on")) renderLeaderboard();
+  });
+}
+function stopLiveLeaderboard(){ if(lbUnsub){ lbUnsub(); lbUnsub=null; } }
+function updateMyRank(){
+  var el=$$("stat-rank"); if(!el) return;
+  var uid=window.auth&&window.auth.currentUser?window.auth.currentUser.uid:null;
+  if(!uid){ el.textContent="--"; return; }
+  var idx=LB_LIVE.findIndex(function(p){ return p.uid===uid; });
+  el.textContent=idx>=0?"#"+(idx+1):"--";
+}
 
 var SKILLS_DATA = [
   {n:"Number Sense", i:"N", m:95, unlocked:true},
@@ -428,7 +427,7 @@ function enterApp(name, grade, gradeNum, isPreview){
   // Start online presence tracking
   setTimeout(function(){
     initPresence();
-    if(window.startPresence) window.startPresence();
+    startLiveLeaderboard();
   }, 2000);
 }
 
@@ -612,6 +611,7 @@ function logout(){
   // previously neither was called, leaving the auth session and the 25s
   // presence writes running after "logout" (account-mixing risk on shared devices).
   if(window.stopPresence){ try{ window.stopPresence(); }catch(e){ console.warn(e); } }
+  stopLiveLeaderboard(); LB_LIVE=[];
   if(window.firebaseLogout){ window.firebaseLogout().catch(function(e){ console.warn("Sign-out failed:", e); }); }
   // Reset student state
   S.name=""; S.grade=""; S.gradeNum=0; S.xp=0; S.level=1; S.streak=0; S.coins=0; S.isPreview=false;
@@ -648,15 +648,19 @@ function renderHome(){
 
 function renderMiniLB(){
   var el=$$("mini-lb"); if(!el) return;
+  if(!LB_LIVE.length){
+    el.innerHTML="<div style='text-align:center;padding:18px;color:var(--text2);font-size:13px'>No rankings yet — be the first on the board!</div>";
+    return;
+  }
   var html="";
-  LB_DATA.slice(0,4).forEach(function(p,i){
+  LB_LIVE.slice(0,4).forEach(function(p,i){
     var rank=i===0?"1st":i===1?"2nd":i===2?"3rd":"#"+(i+1);
     html+="<div class='lb-row'>"
       +"<div class='lb-rank'>"+rank+"</div>"
-      +"<div class='lb-emo' style='background:rgba(255,255,255,0.08)'>"+p.e+"</div>"
-      +"<div class='lb-info'><div class='lb-name'>"+p.n+"</div><div class='lb-grade'>"+p.g+"</div></div>"
-      +"<div class='lb-pts-wrap'><div class='lb-pts'>"+p.pts.toLocaleString()+"</div>"
-      +"<div class='lb-chg "+(p.up?"chg-up":"chg-dn")+"'>"+p.chg+"</div></div>"
+      +"<div class='lb-emo' style='background:rgba(255,255,255,0.08)'>"+escapeHtml((p.name||"?")[0])+"</div>"
+      +"<div class='lb-info'><div class='lb-name'>"+escapeHtml(p.name)+"</div><div class='lb-grade'>"+escapeHtml(gradeLabel(p.grade))+"</div></div>"
+      +"<div class='lb-pts-wrap'><div class='lb-pts'>"+(p.xp||0).toLocaleString()+"</div>"
+      +"<div class='lb-chg chg-up'>Lv "+escapeHtml(String(p.level||1))+"</div></div>"
       +"</div>";
   });
   el.innerHTML = html;
@@ -675,13 +679,17 @@ function renderRoom(){ renderRoomLB(); renderSourceList(); if(!session.qs.length
 
 function renderRoomLB(){
   var el=$$("room-lb"); if(!el) return;
+  if(!LB_LIVE.length){
+    el.innerHTML="<div style='text-align:center;padding:14px;color:var(--text2);font-size:12px'>No rankings yet</div>";
+    return;
+  }
   var html="";
-  LB_DATA.slice(0,3).forEach(function(p,i){
+  LB_LIVE.slice(0,3).forEach(function(p,i){
     var rank=i===0?"1st":i===1?"2nd":"3rd";
     html+="<div class='lb-row'><div class='lb-rank'>"+rank+"</div>"
-      +"<div class='lb-emo' style='background:rgba(255,255,255,0.08)'>"+p.e+"</div>"
-      +"<div class='lb-info'><div class='lb-name'>"+p.n+"</div></div>"
-      +"<div class='lb-pts'>"+p.pts.toLocaleString()+" XP</div></div>";
+      +"<div class='lb-emo' style='background:rgba(255,255,255,0.08)'>"+escapeHtml((p.name||"?")[0])+"</div>"
+      +"<div class='lb-info'><div class='lb-name'>"+escapeHtml(p.name)+"</div></div>"
+      +"<div class='lb-pts'>"+(p.xp||0).toLocaleString()+" XP</div></div>";
   });
   el.innerHTML=html;
 }
@@ -820,130 +828,10 @@ function showTriviaResult(){
 }
 
 // ── CHALLENGE ──────────────────────────────────────────
-function filterOpponents(filter, btn){
-  CHALLENGE_FILTER=filter;
-  document.querySelectorAll("#grade-filter-btns span").forEach(function(s){ s.style.border="1px solid transparent"; });
-  if(btn) btn.style.border="2px solid currentColor";
-  renderOppList();
-}
+// (Fake opponent list removed: filterOpponents/renderOppList/sendChallengeInvite
+//  simulated opponents accepting via Math.random. Real online players render
+//  via renderLivePlayers; bot practice is the labeled Battle Bot card.)
 
-function renderOppList(){
-  var el=$$("opp-list"); if(!el) return;
-  var myBand=getGradeBandNum(S.gradeNum||7);
-  var myGrade=S.gradeNum||7;
-  var filtered=OPPS.filter(function(o){
-    if(CHALLENGE_FILTER==="same") return o.gradeN===myGrade;
-    if(CHALLENGE_FILTER==="higher") return o.gradeN>myGrade;
-    return true;
-  });
-  // Randomize AI opponent online status for demo
-  var aiOnlineNames=["Jordan K.","Sam P.","Dana R.","Morgan L."];
-  var allOpps=filtered.concat(SESSION_PLAYERS.filter(function(p){
-    var g=parseInt(p.grade)||myGrade;
-    if(CHALLENGE_FILTER==="same") return g===myGrade;
-    if(CHALLENGE_FILTER==="higher") return g>myGrade;
-    return true;
-  }).map(function(p){
-    return {n:p.name,gradeN:parseInt(p.grade)||myGrade,band:myBand,tier:"Level "+p.level,meta:p.grade+" - "+p.wins+" Wins",wr:(50+p.wins)+"% Win Rate",winRate:0.5,e:p.name[0],bg:"linear-gradient(135deg,var(--mint),var(--sky))",isReal:true,online:true};
-  }));
-  el.innerHTML="";
-  if(allOpps.length===0){
-    var empty=document.createElement("div"); empty.className="card"; empty.style.cssText="text-align:center;padding:28px;color:var(--text2)";
-    empty.innerHTML="<div style='font-size:36px;margin-bottom:10px'>No opponents at this level</div><div>Try All Levels</div>";
-    el.appendChild(empty); return;
-  }
-  // Online count badge
-  var onlineCount=allOpps.filter(function(o){ return aiOnlineNames.indexOf(o.n)>-1||o.online; }).length;
-  var header=document.createElement("div");
-  header.style.cssText="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12px;font-weight:800;color:var(--text2)";
-  header.innerHTML="<span style='width:8px;height:8px;border-radius:50%;background:var(--mint);display:inline-block;box-shadow:0 0 6px var(--mint)'></span>"+onlineCount+" players currently online &nbsp;|&nbsp; <span style='color:var(--text2)'>Gray dot = offline</span>";
-  el.appendChild(header);
-  allOpps.forEach(function(o){
-    var isOnline=o.online||aiOnlineNames.indexOf(o.n)>-1||isPlayerOnline(o.n);
-    var card=document.createElement("div"); card.className="opp-card"; card.style.cursor="pointer";
-    card.setAttribute("data-n",o.n); card.setAttribute("data-e",o.e); card.setAttribute("data-bg",o.bg); card.setAttribute("data-wr",o.winRate||0.72); card.setAttribute("data-online",isOnline?"1":"0");
-    var realBadge=o.isReal?"<span class='badge b-mint' style='font-size:10px;margin-left:4px'>REAL</span>":"<span class='badge b-sky' style='font-size:10px;margin-left:4px'>AI</span>";
-    var onlineDot="<span style='display:inline-block;width:10px;height:10px;border-radius:50%;background:"+(isOnline?"#06D6A0":"#666")+";box-shadow:"+(isOnline?"0 0 8px #06D6A0":"none")+"';flex-shrink:0;margin-right:4px' title='"+(isOnline?"Online":"Offline")+"'></span>";
-    var statusText=isOnline?"<span style='color:var(--mint);font-size:11px;font-weight:800'>● Online — Ready to battle!</span>":"<span style='color:#888;font-size:11px'>⬤ Offline</span>";
-    var actionBtn=isOnline
-      ?"<button class='btn btn-coral btn-xs' style='flex-shrink:0'>⚔️ Challenge</button>"
-      :"<button class='btn btn-ghost btn-xs' style='flex-shrink:0;opacity:0.6'>Practice</button>";
-    card.innerHTML="<div style='position:relative;flex-shrink:0'>"
-      +"<div style='width:48px;height:48px;border-radius:50%;background:"+o.bg+";color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900'>"+o.e+"</div>"
-      +"<span style='position:absolute;bottom:0;right:0;width:13px;height:13px;border-radius:50%;background:"+(isOnline?"var(--mint)":"#555")+";border:2px solid var(--dark2);box-shadow:"+(isOnline?"0 0 6px var(--mint)":"none")+"'></span></div>"
-      +"<div class='opp-info'><div class='opp-name'>"+o.n+realBadge+"</div>"
-      +"<div class='opp-meta' style='margin-bottom:3px'>Grade "+o.gradeN+" · "+o.tier+" · "+o.meta.split(" - ").slice(-1)[0]+"</div>"
-      +"<div>"+statusText+"</div></div>"
-      +actionBtn;
-    card.addEventListener("click",function(){
-      var online=this.getAttribute("data-online")==="1";
-      if(online){
-        sendChallengeInvite(this.getAttribute("data-n"),this.getAttribute("data-e"),this.getAttribute("data-bg"),parseFloat(this.getAttribute("data-wr")));
-      } else {
-        showToast(this.getAttribute("data-n")+" is offline. Starting practice battle instead...");
-        startBattleWith(this.getAttribute("data-n"),this.getAttribute("data-e"),this.getAttribute("data-bg"),parseFloat(this.getAttribute("data-wr")));
-      }
-    });
-    el.appendChild(card);
-  });
-}
-
-function sendChallengeInvite(name,emoji,bg,winRate){
-  name = escapeHtml(name); // display names are user-controlled
-  // Show invite dialog
-  var overlay=document.createElement("div");
-  overlay.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:500;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px)";
-  overlay.id="challenge-invite-overlay";
-  var box=document.createElement("div");
-  box.style.cssText="background:linear-gradient(135deg,var(--dark2),var(--dark3));border:2px solid var(--coral);border-radius:24px;padding:28px;max-width:360px;width:90%;text-align:center;animation:pop-in .3s ease";
-  box.innerHTML="<div style='font-size:52px;margin-bottom:12px'>⚔️</div>"
-    +"<div style='font-family:Fredoka One,cursive;font-size:24px;margin-bottom:8px'>Challenge Sent!</div>"
-    +"<div style='font-size:14px;color:var(--text2);margin-bottom:20px;line-height:1.7'>"
-    +"<strong style='color:var(--sun)'>"+name+"</strong> has been notified of your challenge!<br><br>"
-    +"<span style='display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--mint);box-shadow:0 0 8px var(--mint)'></span> "
-    +"<strong style='color:var(--mint)'>"+name+" is online</strong> and will accept shortly.<br><br>"
-    +"<span style='color:var(--text2);font-size:12px'>⏱️ Waiting for "+name+" to accept... (15 seconds)</span>"
-    +"</div>"
-    +"<div style='display:flex;gap:8px;justify-content:center'></div>";
-  var waitBar=document.createElement("div");
-  waitBar.style.cssText="height:6px;background:rgba(255,255,255,0.1);border-radius:100px;margin-bottom:20px;overflow:hidden";
-  var fill=document.createElement("div");
-  fill.style.cssText="height:100%;background:linear-gradient(90deg,var(--coral),var(--sun));border-radius:100px;transition:width 0.5s linear;width:100%";
-  waitBar.appendChild(fill);
-  box.insertBefore(waitBar,box.querySelector("div:last-child"));
-  var btnRow=box.querySelector("div:last-child");
-  var cancelBtn=document.createElement("button"); cancelBtn.className="btn btn-ghost btn-sm"; cancelBtn.textContent="Cancel";
-  cancelBtn.addEventListener("click",function(){ overlay.remove(); clearInterval(inviteTimer); showToast("Challenge cancelled."); });
-  var fightBtn=document.createElement("button"); fightBtn.className="btn btn-coral btn-sm"; fightBtn.textContent="Start Now!";
-  fightBtn.addEventListener("click",function(){ overlay.remove(); clearInterval(inviteTimer); startBattleWith(name,emoji,bg,winRate); });
-  btnRow.appendChild(cancelBtn); btnRow.appendChild(fightBtn);
-  overlay.appendChild(box); document.body.appendChild(overlay);
-  // Countdown — simulate opponent accepting after 3-5s
-  var timeLeft=15, accepted=false;
-  var acceptTime=3+Math.floor(Math.random()*5);
-  var inviteTimer=setInterval(function(){
-    timeLeft--;
-    fill.style.width=(timeLeft/15*100)+"%";
-    if(timeLeft<=acceptTime&&!accepted){
-      accepted=true;
-      box.querySelector("div:nth-child(3)").innerHTML="<strong style='color:var(--mint);font-size:16px'>✅ "+name+" accepted your challenge!</strong><br><br><span style='color:var(--text2)'>Battle starting now...</span>";
-      fill.style.background="var(--mint)";
-      setTimeout(function(){ overlay.remove(); clearInterval(inviteTimer); startBattleWith(name,emoji,bg,winRate); },1500);
-    }
-    if(timeLeft<=0){ clearInterval(inviteTimer); if(!accepted){ overlay.remove(); showToast(name+" didn't respond. Try Quick Match!"); } }
-  },1000);
-}
-
-
-// ═══ REAL-TIME MULTIPLAYER SYSTEM ════════════════════════════
-
-window.LIVE_PLAYERS = [];
-window.currentBattleId = null;
-window.currentBattleRole = null;
-window.roundStartTime = null;
-window.botBattleActive = false;
-
-// Pick a question for the battle
 window.pickBattleQuestion = function(){
   var gradeNum = S.gradeNum || 7;
   var band = getBank()[gradeBand(gradeNum)];
@@ -1109,6 +997,7 @@ window.showIncomingChallenge = function(fromUid, fromName, fromGrade, callback){
 window.enterRealBattle = function(battleId, role, oppName){
   window.currentBattleId = battleId;
   window.currentBattleRole = role;
+  window._battleStartedAt = Date.now();
   var ba=document.getElementById("battle-arena");
   if(!ba) return;
   ba.style.display="block";
@@ -1222,22 +1111,23 @@ window.endRealBattle = function(data, role){
       +"<button class='btn btn-sun' onclick='window.endRealBattleCleanup()'>Continue 🎉</button>"
       +"</div>";
   }
-  // Award XP and coins
-  var xpGain = won?120:tied?60:30;
-  var coinGain = won?50:tied?20:10;
-  S.xp += xpGain; S.coins += coinGain;
+  // Server-verified PvP award: recordSession reads the finished battle doc
+  // and applies the outcome bonus; the local numbers below mirror its formula.
+  var xpGain = won?200:tied?100:50;
+  var coinGain = won?150:tied?75:25;
   if(won) S.wins = (S.wins||0)+1;
-  saveSession();
+  awardSession("battle",
+    { answers: [], startedAt: window._battleStartedAt || (Date.now()-60000) },
+    xpGain, coinGain, { battleId: window.currentBattleId });
   showToast((won?"🏆 Won! ":"")+"+" + xpGain + " XP, +" + coinGain + " coins!");
-  // Update presence — no longer in battle
-  if(window.auth && window.auth.currentUser && window.db){
-    // presence update handled via startPresence
-  }
+  // Detach the battle listener and clear the in-battle presence flag.
+  if(window.leaveBattleRoom) window.leaveBattleRoom();
 };
 
 window.endRealBattleCleanup = function(){
   var ba=document.getElementById("battle-arena");
   if(ba) ba.style.display="none";
+  if(window.leaveBattleRoom) window.leaveBattleRoom();
   window.currentBattleId=null; window.currentBattleRole=null;
   // Remove sending overlay if it's there
   var o=document.getElementById("challenge-sending-overlay");
@@ -1258,37 +1148,18 @@ window.startBotBattle = function(){
 
 // Update renderChallenge to show live players
 function renderChallenge(){
-  CHALLENGE_FILTER="same";
-  // Render live players if available
+  // Real online players only — the fake sample roster and battle history
+  // (hardcoded wins over invented students) are gone.
   if(window.LIVE_PLAYERS !== undefined){
     window.renderLivePlayers(window.LIVE_PLAYERS);
   }
-  renderOppList();
-  var hist=$$("battle-hist"); if(!hist) return;
-  var histData=[
-    {o:"Jordan K.",r:"Win",sc:"4/5 vs 3/5",d:"Today",c:"var(--mint)"},
-    {o:"Riley M.",r:"Loss",sc:"2/5 vs 4/5",d:"Yesterday",c:"var(--coral)"},
-    {o:"Sam P.",r:"Win",sc:"5/5 vs 2/5",d:"Mar 21",c:"var(--mint)"}
-  ];
-  var html="";
-  histData.forEach(function(h){
-    html+="<div class='hist-row'><div class='hist-dot' style='background:"+h.c+"'></div>"
-      +"<div style='flex:1'><div style='font-size:14px;font-weight:800'>vs "+h.o+"</div>"
-      +"<div style='font-size:12px;color:var(--text2)'>"+h.sc+" - "+h.d+"</div></div>"
-      +"<span class='badge "+(h.r==="Win"?"b-mint":"b-coral")+"'>"+h.r+"</span></div>";
-  });
-  hist.innerHTML=html;
+  var hist=$$("battle-hist");
+  if(hist) hist.innerHTML="<div style='text-align:center;padding:16px;color:var(--text2);font-size:13px'>Your battle history will appear here after your first duel.</div>";
 }
 
-function challengeOpp(name,emoji,bg,winRate){
-  winRate=parseFloat(winRate)||0.72;
-  showToast("Challenge sent to "+name+"!");
-  startBattleWith(name,emoji,bg,winRate);
-}
-
+// "Find Match Now" and rematch buttons: practice battle vs the bot.
 function startBattle(){
-  var o=OPPS[Math.floor(Math.random()*OPPS.length)];
-  startBattleWith(o.n,o.e,o.bg,o.winRate||0.72);
+  if(window.startBotBattle) window.startBotBattle();
 }
 
 async function startBattleWith(name,emoji,bg,winRate){
@@ -1397,17 +1268,28 @@ function endBattle(bs){
 }
 
 // ── SEARCH ─────────────────────────────────────────────
+// Debounced + sequence-tokened: the old version fired a Firestore query per
+// keystroke and let stale responses overwrite newer results.
+var _searchDebounce=null;
+var _searchSeq=0;
 function searchPlayers(queryStr){
+  clearTimeout(_searchDebounce);
+  _searchDebounce=setTimeout(function(){ doSearchPlayers(queryStr); },300);
+}
+function doSearchPlayers(queryStr){
   var resultsEl=$$("player-search-results"); if(!resultsEl) return;
   if(!queryStr||queryStr.length<2){
+    _searchSeq++;
     resultsEl.innerHTML=""; return;
   }
   // Show loading state
   resultsEl.innerHTML="<div style='color:var(--text2);font-size:13px;padding:10px;text-align:center'>Searching...</div>";
 
+  var seq=++_searchSeq;
   if(window.searchRegisteredUsers){
     // Search Firestore — all registered students
     window.searchRegisteredUsers(queryStr).then(function(matches){
+      if(seq!==_searchSeq) return; // a newer search superseded this one
       resultsEl.innerHTML="";
       if(matches.length===0){
         var d=document.createElement("div");
@@ -1503,15 +1385,6 @@ function searchPlayers(queryStr){
   }
 }
 
-function selectPlayerChallenge(name){
-  var input=$$("search-player-input"); if(input) input.value=name;
-  var r=$$("player-search-results"); if(r) r.innerHTML="";
-  showToast("Challenge sent to "+name+"!");
-  var opp=OPPS.find(function(o){ return o.n===name; });
-  if(opp) startBattleWith(opp.n,opp.e,opp.bg,opp.winRate);
-  else startBattle();
-}
-
 function sendDirectChallenge(){
   var input=$$("search-player-input"); var name=input?input.value.trim():"";
   if(!name){ showToast("Type a student name to challenge!"); return; }
@@ -1537,77 +1410,58 @@ function setLBTab(tab,btn){
   renderLeaderboard();
 }
 
+// Real rankings from the function-maintained `leaderboard` collection.
+// (Replaces four hardcoded sample arrays that never showed actual players.)
+function lbDataForTab(tab){
+  if(tab==="grade"){
+    var myBand=gradeBand(S.gradeNum||7);
+    return LB_LIVE.filter(function(p){ return gradeBand(parseInt(p.grade)||7)===myBand; });
+  }
+  // school/national tabs share the global ranking until schools exist.
+  return LB_LIVE;
+}
+
 function renderLeaderboard(){
   var tab=window.currentLBTab||"grade";
-  var gn=S.gradeNum||7;
-  var gl=gn+"th";
-  var BASE=[
-    {n:"Jordan K.",g:gl,  pts:5820,e:"J",chg:"+2",up:true},
-    {n:"Sam P.",   g:gl,  pts:5410,e:"S",chg:"+1",up:true},
-    {n:"Riley M.", g:gl,  pts:5200,e:"R",chg:"0", up:false},
-    {n:"Alex J.",  g:gl,  pts:3240,e:"A",chg:"+3",up:true},
-    {n:"Casey T.", g:gl,  pts:3100,e:"C",chg:"-1",up:false},
-    {n:"Morgan L.",g:gl,  pts:2980,e:"M",chg:"+4",up:true},
-    {n:"Taylor B.",g:gl,  pts:2750,e:"T",chg:"-2",up:false},
-    {n:"Drew K.",  g:gl,  pts:2640,e:"D",chg:"+5",up:true}
-  ];
-  var ALL=[
-    {n:"Priya S.", g:"11th",pts:8200,e:"P",chg:"+3",up:true},
-    {n:"Sam P.",   g:"7th", pts:7500,e:"S",chg:"+1",up:true},
-    {n:"Jordan K.",g:"5th", pts:6800,e:"J",chg:"+2",up:true},
-    {n:"Riley M.", g:"9th", pts:5200,e:"R",chg:"0", up:false},
-    {n:"Alex J.",  g:"11th",pts:4800,e:"A",chg:"+4",up:true},
-    {n:"Casey T.", g:"3rd", pts:4100,e:"C",chg:"-1",up:false},
-    {n:"Morgan L.",g:"6th", pts:3900,e:"M",chg:"+2",up:true},
-    {n:"Taylor B.",g:"10th",pts:3200,e:"T",chg:"-2",up:false}
-  ];
-  var NAT=[
-    {n:"Mathew K.",g:"12th",pts:18200,e:"M",chg:"+1",up:true},
-    {n:"Priya S.", g:"11th",pts:15800,e:"P",chg:"+2",up:true},
-    {n:"Jordan K.",g:"5th", pts:14200,e:"J",chg:"+3",up:true},
-    {n:"Devon R.", g:"9th", pts:11900,e:"D",chg:"0", up:false},
-    {n:"Sam P.",   g:"7th", pts:10500,e:"S",chg:"+1",up:true},
-    {n:"Riley M.", g:"8th", pts:9800, e:"R",chg:"-1",up:false},
-    {n:"Alex J.",  g:"10th",pts:8700, e:"A",chg:"+2",up:true},
-    {n:"Casey T.", g:"3rd", pts:7200, e:"C",chg:"+1",up:true}
-  ];
-  var WK=[
-    {n:"Taylor B.",g:"10th",pts:980, e:"T",chg:"+5",up:true},
-    {n:"Casey T.", g:"3rd", pts:840, e:"C",chg:"+3",up:true},
-    {n:"Jordan K.",g:"5th", pts:720, e:"J",chg:"-1",up:false},
-    {n:"Morgan L.",g:"6th", pts:680, e:"M",chg:"+2",up:true},
-    {n:"Sam P.",   g:"7th", pts:590, e:"S",chg:"0", up:false},
-    {n:"Alex J.",  g:"11th",pts:510, e:"A",chg:"+4",up:true},
-    {n:"Drew K.",  g:"8th", pts:480, e:"D",chg:"-2",up:false},
-    {n:"Riley M.", g:"9th", pts:420, e:"R",chg:"+1",up:true}
-  ];
-  var DATA=tab==="national"?NAT:tab==="school"?ALL:tab==="weekly"?WK:BASE;
+  var pod=$$("lb-podium"), full=$$("lb-full");
+  if(tab==="weekly"){
+    if(pod) pod.innerHTML="";
+    if(full) full.innerHTML="<div style='text-align:center;padding:28px;color:var(--text2)'>📅 Weekly rankings are coming soon — check the other tabs!</div>";
+    return;
+  }
+  var DATA=lbDataForTab(tab);
+  var myUid=window.auth&&window.auth.currentUser?window.auth.currentUser.uid:null;
+  if(!DATA.length){
+    if(pod) pod.innerHTML="";
+    if(full) full.innerHTML="<div style='text-align:center;padding:28px;color:var(--text2)'><div style='font-size:36px;margin-bottom:8px'>👑</div>No rankings yet — play a round and claim the top spot!</div>";
+    return;
+  }
   var colors=["linear-gradient(135deg,var(--sun),var(--sun2))","linear-gradient(135deg,#c0c0c0,#a0a0a0)","linear-gradient(135deg,#cd7f32,#a06020)"];
-  var pod=$$("lb-podium");
   if(pod){
     var order=[1,0,2], html="";
     order.forEach(function(i){
       var p=DATA[i];
+      if(!p){ html+="<div class='podium-place'></div>"; return; }
       html+="<div class='podium-place'>"
         +"<div class='pod-crown'>"+(i===0?"1st":i===1?"2nd":"3rd")+"</div>"
-        +"<div class='pod-avatar' style='background:"+colors[i]+";color:var(--dark);font-size:20px;font-weight:900'>"+p.e+"</div>"
-        +"<div class='pod-name'>"+p.n+"</div>"
-        +"<div class='pod-pts'>"+p.pts.toLocaleString()+"</div>"
+        +"<div class='pod-avatar' style='background:"+colors[i]+";color:var(--dark);font-size:20px;font-weight:900'>"+escapeHtml((p.name||"?")[0])+"</div>"
+        +"<div class='pod-name'>"+escapeHtml(p.name)+"</div>"
+        +"<div class='pod-pts'>"+(p.xp||0).toLocaleString()+"</div>"
         +"<div class='pod-block' style='background:"+colors[i]+";height:"+(i===0?"100px":i===1?"80px":"65px")+";width:100%;border-radius:14px 14px 0 0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900'>#"+(i+1)+"</div>"
         +"</div>";
     });
     pod.innerHTML=html;
   }
-  var full=$$("lb-full");
   if(full){
     var fhtml="";
     DATA.forEach(function(p,i){
       var rank=i===0?"1st":i===1?"2nd":i===2?"3rd":"#"+(i+1);
-      fhtml+="<div class='lb-row'><div class='lb-rank'>"+rank+"</div>"
-        +"<div class='lb-emo' style='background:rgba(255,255,255,0.08)'>"+p.e+"</div>"
-        +"<div class='lb-info'><div class='lb-name'>"+p.n+"</div><div class='lb-grade'>"+p.g+"</div></div>"
-        +"<div class='lb-pts-wrap'><div class='lb-pts'>"+p.pts.toLocaleString()+"</div>"
-        +"<div class='lb-chg "+(p.up?"chg-up":"chg-dn")+"'>"+p.chg+"</div></div></div>";
+      var mine=p.uid===myUid;
+      fhtml+="<div class='lb-row'"+(mine?" style='border:1px solid var(--sun);border-radius:10px'":"")+"><div class='lb-rank'>"+rank+"</div>"
+        +"<div class='lb-emo' style='background:rgba(255,255,255,0.08)'>"+escapeHtml((p.name||"?")[0])+"</div>"
+        +"<div class='lb-info'><div class='lb-name'>"+escapeHtml(p.name)+(mine?" <span class='badge b-sun' style='font-size:9px'>YOU</span>":"")+"</div><div class='lb-grade'>"+escapeHtml(gradeLabel(p.grade))+"</div></div>"
+        +"<div class='lb-pts-wrap'><div class='lb-pts'>"+(p.xp||0).toLocaleString()+"</div>"
+        +"<div class='lb-chg chg-up'>Lv "+escapeHtml(String(p.level||1))+"</div></div></div>";
     });
     full.innerHTML=fhtml;
   }
@@ -2247,14 +2101,12 @@ Object.assign(window, {
   askTutor,
   battleAnswer,
   buildChildCard,
-  challengeOpp,
   closeLinkChildModal,
   closeLoginModal,
   closeModal,
   copyLinkCode,
   endBattle,
   enterApp,
-  filterOpponents,
   fmtTime,
   forgotPassword,
   genAIQuestions,
@@ -2286,7 +2138,6 @@ Object.assign(window, {
   renderHome,
   renderLeaderboard,
   renderMiniLB,
-  renderOppList,
   renderParentDash,
   renderPractice,
   renderPracticeQ,
@@ -2304,8 +2155,6 @@ Object.assign(window, {
   searchPlayers,
   seekMusic,
   selectPlan,
-  selectPlayerChallenge,
-  sendChallengeInvite,
   sendDirectChallenge,
   sendMsg,
   sendToWeb3Forms,

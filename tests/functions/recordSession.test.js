@@ -94,6 +94,22 @@ describe("recordSession", () => {
     expect(res.data.coins).toBe(4 * 6);
   });
 
+  it("verifies PvP outcomes from the battle doc and blocks double-recording", async () => {
+    const battleId = `test_battle_${Date.now()}`;
+    // Participant creates and finishes a battle (allowed by rules).
+    await setDoc(doc(db, "battles", battleId), {
+      p1Uid: uid, p1Name: "Test Student", p1Score: 3, p1Time: 0,
+      p2Uid: "someone-else", p2Name: "Rival", p2Score: 1, p2Time: 0,
+      round: 5, totalRounds: 5, status: "finished", createdAt: new Date(),
+    });
+    const res = await call({ mode: "battle", answers: [], durationMs: 60000, battleId });
+    expect(res.data.xp).toBe(200); // verified win
+    expect(res.data.coins).toBe(150);
+    expect(res.data.totals.wins).toBeGreaterThanOrEqual(1);
+    await expect(call({ mode: "battle", answers: [], durationMs: 60000, battleId }))
+      .rejects.toMatchObject({ code: "functions/already-exists" });
+  });
+
   it("client cannot write xp directly (rules deny the legacy path)", async () => {
     await expect(setDoc(doc(db, "users", uid), { xp: 999999 }, { merge: true }))
       .rejects.toThrow();

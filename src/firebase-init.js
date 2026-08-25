@@ -68,22 +68,28 @@
     return snap.exists() ? snap.data() : null;
   };
 
+  // Live leaderboard from the function-maintained mirror collection.
+  // (The old version queried users/ directly, which security rules now deny.)
   window.startLeaderboard = function(callback) {
-    const q = query(collection(db, "users"), orderBy("xp", "desc"), limit(20));
+    const q = query(collection(db, "leaderboard"), orderBy("xp", "desc"), limit(50));
     return onSnapshot(q, snapshot => {
       const leaders = snapshot.docs.map((d, i) => ({
-        rank: i + 1, name: d.data().displayName,
-        xp: d.data().xp, level: d.data().level,
-        grade: d.data().grade
+        uid: d.id, rank: i + 1,
+        name: d.data().name,
+        xp: d.data().xp || 0,
+        level: d.data().level || 1,
+        wins: d.data().wins || 0,
+        grade: d.data().grade || ""
       }));
       callback(leaders);
-    });
+    }, e => console.warn("leaderboard listener:", e));
   };
 
   // ── REAL-TIME PRESENCE ──────────────────────────────────────
   let presenceInterval = null;
   let challengeListener = null;
   let battleListener = null;
+  let playersListener = null;
 
   window.startPresence = async function() {
     const user = auth.currentUser;
@@ -128,16 +134,23 @@
     const user = auth.currentUser;
     if (!user) return;
     clearInterval(presenceInterval);
+    if (playersListener) { playersListener(); playersListener = null; }
+    if (challengeListener) { challengeListener(); challengeListener = null; }
     try {
-      await setDoc(doc(db, "presence", user.uid), { status: "offline" }, { merge: true });
-    } catch(e) {}
+      await setDoc(doc(db, "presence", user.uid),
+        { online: false, lastSeen: serverTimestamp() }, { merge: true });
+    } catch(e) { console.warn("stopPresence:", e); }
   };
 
   // ── ONLINE PLAYERS LISTENER ──────────────────────────────────
   window.listenOnlinePlayers = function() {
+    // Retain the unsubscribe: startPresence can run more than once per
+    // session and this listener used to stack a fresh permanent snapshot
+    // subscription on every call.
+    if (playersListener) { playersListener(); playersListener = null; }
     const q = query(collection(db, "presence"),
       where("online", "==", true));
-    onSnapshot(q, snapshot => {
+    playersListener = onSnapshot(q, snapshot => {
       const uid = auth.currentUser ? auth.currentUser.uid : null;
       const players = [];
       snapshot.docs.forEach(d => {
@@ -175,19 +188,25 @@
       status: "pending",
       createdAt: serverTimestamp()
     });
+    window._pendingChallengeUid = toUid;
     showToast("⚔️ Challenge sent to " + toName + "! Waiting...");
     // Auto-cancel after 30s if not accepted
     window._challengeTimer = setTimeout(async () => {
       try {
+        // Stop listening for a late acceptance FIRST — otherwise an accept
+        // that lands a moment after this timeout would start a real battle
+        // on top of the bot battle below.
+        if (window._waitUnsubscribe) { window._waitUnsubscribe(); window._waitUnsubscribe = null; }
+        window._pendingChallengeUid = null;
         const snap = await getDoc(challengeRef);
         if (snap.exists() && snap.data().status === "pending") {
           await deleteDoc(challengeRef);
           const overlay = document.getElementById("challenge-sending-overlay");
           if (overlay) overlay.remove();
           showToast(toName + " didn't respond. Starting bot battle...");
-          if (window.startBotBattle) window.startBotBattle();
+          if (window.startBotBattle && !window.currentBattleId) window.startBotBattle();
         }
-      } catch(e) {}
+      } catch(e) { console.warn("challenge timeout cleanup:", e); }
     }, 30000);
   };
 
@@ -205,55 +224,53 @@
       processing = true;
       if (window.showIncomingChallenge) {
         window.showIncomingChallenge(data.fromUid, data.fromName, data.fromGrade, async accepted => {
-          if (accepted) {
-            const battleId = data.fromUid + "_" + user.uid + "_" + Date.now();
-            const q = window.pickBattleQuestion ? window.pickBattleQuestion()
-              : { q:"2+2=?", opts:["3","4","5","6"], a:"4" };
-            // Step 1: Create battle document
-            await setDoc(doc(db, "battles", battleId), {
-              p1: data.fromUid, p1Name: data.fromName, p1Score: 0, p1Time: 0,
-              p2: user.uid, p2Name: window.S ? window.S.name : "Player 2",
-              p2Score: 0, p2Time: 0,
-              round: 1, totalRounds: 5,
-              question: q.q, options: q.opts, answer: q.a,
-              status: "active",
-              createdAt: serverTimestamp()
-            });
-            // Step 2: Write battleId to challenger's OWN notify doc (they own it = no permission issue)
-            await setDoc(doc(db, "challenges", data.fromUid + "_notify"), {
-              battleId: battleId,
-              forUid: data.fromUid,
-              status: "ready",
-              createdAt: serverTimestamp()
-            });
-            // Step 3: Delete the incoming challenge doc
-            try { await deleteDoc(ref); } catch(e) {}
-            // Step 4: Acceptor enters battle
-            if (window.joinBattleRoom) window.joinBattleRoom(battleId, "p2", data.fromName);
-          } else {
-            try { await deleteDoc(ref); } catch(e) {}
+          try {
+            if (accepted) {
+              // The sender may have cancelled while the popup was open —
+              // cancel now deletes the doc, so re-check before starting.
+              const fresh = await getDoc(ref);
+              if (!fresh.exists() || fresh.data().status !== "pending") {
+                showToast(data.fromName + " cancelled the challenge.");
+                return;
+              }
+              const battleId = data.fromUid + "_" + user.uid + "_" + Date.now();
+              const q = window.pickBattleQuestion ? window.pickBattleQuestion()
+                : { q:"2+2=?", opts:["3","4","5","6"], a:"4" };
+              // Step 1: Create battle document (field names match
+              // firestore.rules + the recordSession verifier).
+              await setDoc(doc(db, "battles", battleId), {
+                p1Uid: data.fromUid, p1Name: data.fromName, p1Score: 0, p1Time: 0,
+                p2Uid: user.uid, p2Name: window.S ? window.S.name : "Player 2",
+                p2Score: 0, p2Time: 0,
+                round: 1, totalRounds: 5,
+                question: q.q, options: q.opts, answer: q.a, qid: q.id || null,
+                status: "active",
+                createdAt: serverTimestamp()
+              });
+              // Step 2: Notify the challenger via their {fromUid}_notify doc
+              // (shape required by the challenge rules).
+              await setDoc(doc(db, "challenges", data.fromUid + "_notify"), {
+                fromUid: user.uid,
+                fromName: window.S ? window.S.name : "Player",
+                battleId: battleId,
+                status: "pending",
+                createdAt: serverTimestamp()
+              });
+              // Step 3: Delete the incoming challenge doc
+              try { await deleteDoc(ref); } catch(e) { console.warn(e); }
+              // Step 4: Acceptor enters battle
+              if (window.joinBattleRoom) window.joinBattleRoom(battleId, "p2", data.fromName);
+            } else {
+              try { await deleteDoc(ref); } catch(e) { console.warn(e); }
+            }
+          } finally {
+            // Always re-arm: this flag previously stayed true after an
+            // accept, silently ignoring every later challenge in the session.
             processing = false;
           }
         });
       }
     });
-  };
-
-  // ── ACCEPT CHALLENGE & START BATTLE ROOM ─────────────────────
-  window.acceptChallengeAndStart = async function(fromUid, fromName) {
-    const user = auth.currentUser;
-    if (!user) return;
-    const battleId = fromUid + "_" + user.uid + "_" + Date.now();
-    const q = window.pickBattleQuestion ? window.pickBattleQuestion() : { q: "2 + 2 = ?", opts: ["3","4","5","6"], a: "4" };
-    await setDoc(doc(db, "battles", battleId), {
-      p1: fromUid, p1Name: fromName, p1Score: 0, p1Time: 0,
-      p2: user.uid, p2Name: window.S.name, p2Score: 0, p2Time: 0,
-      round: 1, totalRounds: 5,
-      question: q.q, options: q.opts, answer: q.a,
-      status: "active",
-      createdAt: serverTimestamp()
-    });
-    if (window.joinBattleRoom) window.joinBattleRoom(battleId, "p2", fromName);
   };
 
   // ── CHALLENGER: WATCH FOR ACCEPTANCE ─────────────────────────
@@ -265,8 +282,10 @@
     const unsub = onSnapshot(notifyRef, snap => {
       if (!snap.exists()) return;
       const data = snap.data();
-      if (data.status === "ready" && data.battleId && data.forUid === user.uid) {
+      if (data.battleId && data.status === "pending") {
         unsub();
+        window._waitUnsubscribe = null;
+        window._pendingChallengeUid = null;
         if (window._challengeTimer) { clearTimeout(window._challengeTimer); window._challengeTimer = null; }
         const overlay = document.getElementById("challenge-sending-overlay");
         if (overlay) overlay.remove();
@@ -291,10 +310,12 @@
     // Remove incoming overlay if still showing
     const inOverlay = document.getElementById("incoming-challenge-overlay");
     if (inOverlay) inOverlay.remove();
-    // Set in-battle presence
+    // Set in-battle presence (lastSeen refreshed — rules require it on every write)
     const user = auth.currentUser;
     if (user) {
-      setDoc(doc(db, "presence", user.uid), { inBattle: true }, { merge: true });
+      setDoc(doc(db, "presence", user.uid),
+        { inBattle: true, lastSeen: serverTimestamp() }, { merge: true })
+        .catch(e => console.warn("presence inBattle:", e));
     }
     showToast("⚔️ Battle starting with " + oppName + "! Get ready!");
     if (window.enterRealBattle) window.enterRealBattle(battleId, role, oppName);
@@ -303,6 +324,18 @@
       const data = snap.data();
       if (window.updateBattleState) window.updateBattleState(data, battleId, role);
     });
+  };
+
+  // Tear down after a battle ends: stop the doc listener (it used to stay
+  // attached to finished battles) and clear the in-battle presence flag.
+  window.leaveBattleRoom = function() {
+    if (battleListener) { battleListener(); battleListener = null; }
+    const user = auth.currentUser;
+    if (user) {
+      setDoc(doc(db, "presence", user.uid),
+        { inBattle: false, lastSeen: serverTimestamp() }, { merge: true })
+        .catch(e => console.warn("presence leave:", e));
+    }
   };
 
   // ── SUBMIT ANSWER TO BATTLE ───────────────────────────────────
@@ -376,35 +409,34 @@
       });
     }
 
-    // Step 2: Query Firestore users — NO orderBy to avoid index requirement
+    // Step 2: prefix-search the leaderboard mirror (users/ is not readable
+    // by other players under security rules; the old version also scanned
+    // 300 docs per keystroke).
     try {
+      const cap = queryStr.charAt(0).toUpperCase() + queryStr.slice(1);
       const snap = await getDocs(query(
-        collection(db, "users"),
-        limit(300)
+        collection(db, "leaderboard"),
+        where("name", ">=", cap),
+        where("name", "<=", cap + ""),
+        limit(20)
       ));
       snap.docs.forEach(d => {
         if (d.id === myUid) return;
         // Skip if already in results from LIVE_PLAYERS
         if (results.some(r => r.uid === d.id)) return;
         const data = d.data();
-        const name = (data.name || data.displayName || "").toLowerCase();
-        if (name.indexOf(q) > -1) {
-          const isOnline = window.LIVE_PLAYERS &&
-            window.LIVE_PLAYERS.some(p => p.uid === d.id);
-          const liveData = isOnline
-            ? window.LIVE_PLAYERS.find(p => p.uid === d.id)
-            : null;
-          results.push({
-            uid: d.id,
-            name: data.name || data.displayName || "Student",
-            grade: data.grade || "",
-            level: data.level || 1,
-            xp: data.xp || 0,
-            online: isOnline,
-            inBattle: liveData ? liveData.inBattle : false,
-            avatar: (data.name || data.displayName || "S")[0].toUpperCase()
-          });
-        }
+        const liveData = window.LIVE_PLAYERS
+          ? window.LIVE_PLAYERS.find(p => p.uid === d.id) : null;
+        results.push({
+          uid: d.id,
+          name: data.name || "Student",
+          grade: data.grade || "",
+          level: data.level || 1,
+          xp: data.xp || 0,
+          online: !!liveData,
+          inBattle: liveData ? liveData.inBattle : false,
+          avatar: (data.name || "S")[0].toUpperCase()
+        });
       });
     } catch(e) {
       console.log("Firestore search error:", e.message);
