@@ -1,6 +1,41 @@
 // MathCrown v1.0 - K-12 Competitive Math Platform
 // Zero mixed quotes, zero multiline strings, zero duplicates
+import { loadBank } from "./data/bank-loader.js";
+
 window.MATHCHAMP_LOADED = true;
+
+// Validated question bank (data/question_bank.json — deduped, wrong answers
+// fixed). Loaded async; until it lands, the legacy global QUESTION_BANK from
+// question_bank.js serves as fallback so gameplay never blocks.
+var FIXED_BANK = null;
+loadBank()
+  .then(function(b){ FIXED_BANK = b; })
+  .catch(function(e){ console.warn("Fixed question bank failed to load, using legacy bank:", e); });
+function getBank(){ return FIXED_BANK || window.QUESTION_BANK || {}; }
+
+// ── SHARED HELPERS ─────────────────────────────────────
+// Single email validator (replaces six copy-pasted indexOf("@") checks).
+var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+function isValidEmail(email){ return !!email && EMAIL_RE.test(email); }
+
+// "1st Grade" / "2nd Grade" / "11th Grade" — replaces the "1th Grade" bug.
+function gradeLabel(n){
+  n = parseInt(n) || 7;
+  var suffix = "th";
+  if (n % 100 < 11 || n % 100 > 13) {
+    if (n % 10 === 1) suffix = "st";
+    else if (n % 10 === 2) suffix = "nd";
+    else if (n % 10 === 3) suffix = "rd";
+  }
+  return n + suffix + " Grade";
+}
+
+// Escape user-controlled text before it is placed into innerHTML templates.
+function escapeHtml(s){
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
 
 // ── STATE ──────────────────────────────────────────────
 var S = {
@@ -46,7 +81,8 @@ var USED_QUESTIONS = new Set(); // track question text to avoid repeats
 
 function getRandQ(gradeN){
   var band = gradeBand(gradeN);
-  var bank = QUESTION_BANK[band];
+  var bank = getBank()[band];
+  if(!bank) return null;
   var topics = Object.keys(bank);
   // Try up to 30 times to find an unused question
   for(var attempt=0; attempt<30; attempt++){
@@ -227,7 +263,7 @@ function saveSession(){
       xp:S.xp, level:S.level, streak:S.streak, coins:S.coins,
       name:S.name, grade:S.grade, gradeNum:S.gradeNum
     }));
-  }catch(e){}
+  }catch(e){ console.warn(e); }
 }
 
 function registerPlayer(name, grade){
@@ -242,15 +278,31 @@ function openModal(t){
   m.classList.add("open");
   switchTab(t, $$("tab-"+(t==="student"?"s":"p")+"-btn"));
 }
-function closeModal(){ var m=$$("signup-modal"); if(m) m.classList.remove("open"); }
+function closeModal(){ var m=$$("signup-modal"); if(m) m.classList.remove("open"); resetModalInputs("signup-modal"); }
 
 function switchTab(t, btn){
   var ts=$$("tab-student"), tp=$$("tab-parent");
   if(ts) ts.style.display = t==="student"?"block":"none";
   if(tp) tp.style.display = t==="parent"?"block":"none";
-  document.querySelectorAll(".tab-btn").forEach(function(b){ b.classList.remove("on"); });
+  // Scoped to the signup modal — the unscoped selector used to also strip the
+  // active state off the login modal's tabs.
+  document.querySelectorAll("#signup-modal .tab-btn").forEach(function(b){ b.classList.remove("on"); });
   if(btn) btn.classList.add("on");
 }
+
+// Clear every text/password/email input and select inside a modal so values
+// never persist across attempts or users on a shared device.
+function resetModalInputs(modalId){
+  var m=$$(modalId); if(!m) return;
+  m.querySelectorAll("input").forEach(function(i){ if(i.type!=="checkbox"&&i.type!=="radio") i.value=""; else i.checked=false; });
+  m.querySelectorAll("select").forEach(function(s){ s.selectedIndex=0; });
+}
+// Paid plans are gated until server-side Stripe checkout + entitlements ship.
+// (The old client-side "checkout" granted plans for free from localStorage.)
+function upgradeToPlan(_planKey){
+  showToast("💳 Paid plans are coming soon — enjoy MathCrown free for now!", 3500);
+}
+
 function selectPlan(el){
   document.querySelectorAll(".plan-card").forEach(function(c){ c.classList.remove("sel"); });
   el.classList.add("sel");
@@ -259,34 +311,46 @@ function selectPlan(el){
 function openLoginModal(){ var m=$$("login-modal"); if(m) m.classList.add("open"); }
 
 async function forgotPassword(role){
-  var email = "";
-  if(role==="student"){
-    var emailEl=$$("l-email"); email=emailEl?emailEl.value.trim():"";
-    if(!email){ email=prompt("Enter your student email address to reset your password:",""); }
-  } else {
-    var emailEl=$$("l-parent-email"); email=emailEl?emailEl.value.trim():"";
-    if(!email){ email=prompt("Enter your parent email address to reset your password:",""); }
+  // Read the email from the login form itself — no blocking prompt() dialogs.
+  var emailEl = $$(role==="student" ? "l-email" : "l-parent-email");
+  var email = emailEl ? emailEl.value.trim() : "";
+  if(!isValidEmail(email)){
+    showToast("Type your email in the email box above, then tap Forgot Password.");
+    if(emailEl) emailEl.focus();
+    return;
   }
-  if(!email||email.indexOf("@")<1){ showToast("Please enter a valid email address first!"); return; }
-  if(window.auth){
-    try{
-      await window.firebaseResetPassword(email);
-      showToast("Password reset email sent to "+email+"! Check your inbox. 📧",4000);
-    }catch(e){
-      var msg=e.message||"";
-      if(msg.indexOf("user-not-found")>-1) showToast("No account found for that email address.");
-      else showToast("Could not send reset email. Please check the address and try again.");
-    }
-  } else {
+  if(!window.auth || !window.firebaseResetPassword){
+    // Never fake a success message: previously this branch claimed the email
+    // was sent when nothing had happened at all.
+    showToast("Still loading — please try again in a moment.");
+    return;
+  }
+  try{
+    await window.firebaseResetPassword(email);
     showToast("Password reset email sent to "+email+"! Check your inbox. 📧",4000);
+  }catch(e){
+    var msg=e.message||"";
+    if(msg.indexOf("user-not-found")>-1) showToast("No account found for that email address.");
+    else showToast("Could not send reset email. Please check the address and try again.");
   }
 }
-function closeLoginModal(){ var m=$$("login-modal"); if(m) m.classList.remove("open"); }
+function closeLoginModal(){ var m=$$("login-modal"); if(m) m.classList.remove("open"); resetModalInputs("login-modal"); }
 function showLinkChildModal(){ var m=$$("link-child-modal"); if(m) m.classList.add("open"); }
-function closeLinkChildModal(){ var m=$$("link-child-modal"); if(m) m.classList.remove("open"); }
+function closeLinkChildModal(){ var m=$$("link-child-modal"); if(m) m.classList.remove("open"); resetModalInputs("link-child-modal"); }
 
 // ── NAVIGATION ─────────────────────────────────────────
+// Any timer belonging to the page being left must die with it: previously
+// trivia/practice/battle intervals kept running against the hidden DOM,
+// silently auto-completing sessions the player wasn't looking at.
+var currentBattleTimer = null;
+function stopAllGameTimers(){
+  if(triviaTimer){ clearInterval(triviaTimer); triviaTimer=null; }
+  if(practiceTimer){ clearInterval(practiceTimer); practiceTimer=null; }
+  if(currentBattleTimer){ clearInterval(currentBattleTimer); currentBattleTimer=null; }
+}
+
 function goPage(id, el, mob){
+  stopAllGameTimers();
   document.querySelectorAll(".page").forEach(function(p){ p.classList.remove("on"); });
   var pg = $$("p-"+id); if(pg) pg.classList.add("on");
   var navSel = mob ? ".mob-item" : ".nav-item";
@@ -339,7 +403,7 @@ async function signupStudent(){
   var email=$$("s-email")?$$("s-email").value.trim():"";
   var password=$$("s-password")?$$("s-password").value:"";
   if(!fn||!gr){ showToast("Please fill in your name and grade!"); return; }
-  if(!email||email.indexOf("@")<1){ showToast("Please enter a valid email address!"); return; }
+  if(!isValidEmail(email)){ showToast("Please enter a valid email address!"); return; }
   if(!password||password.length<6){ showToast("Password must be at least 6 characters!"); return; }
   var fullName=fn+(ln?" "+ln:"");
   S.xp=0; S.level=1; S.streak=0; S.coins=0; S.email=email;
@@ -421,7 +485,7 @@ function switchLoginTab(t, btn){
 async function loginParent(){
   var email=$$("l-parent-email")?$$("l-parent-email").value.trim():"";
   var password=$$("l-parent-password")?$$("l-parent-password").value:"";
-  if(!email||email.indexOf("@")<1){ showToast("Please enter your email address!"); return; }
+  if(!isValidEmail(email)){ showToast("Please enter a valid email address!"); return; }
   if(!password){ showToast("Please enter your password!"); return; }
   var loginBtn=document.querySelector("#login-tab-parent .btn-mint");
   if(loginBtn){ loginBtn.textContent="Signing in..."; loginBtn.disabled=true; }
@@ -434,7 +498,7 @@ async function loginParent(){
         var pKey="mc_parent_"+email.toLowerCase().replace(/[^a-z0-9]/g,"");
         var saved=localStorage.getItem(pKey);
         if(saved){ var d=JSON.parse(saved); PARENT.plan=d.plan||"Free"; PARENT.children=d.children||[]; PARENT.name=d.name||fn; }
-      }catch(e){}
+      }catch(e){ console.warn(e); }
       var nav=$$("nav-parent-dash"); if(nav) nav.style.display="flex";
       closeLoginModal();
       var land=$$("s-land"); if(land) land.classList.remove("active");
@@ -458,7 +522,7 @@ async function loginParent(){
     var pKey2="mc_parent_"+email.toLowerCase().replace(/[^a-z0-9]/g,"");
     var saved2=localStorage.getItem(pKey2);
     if(saved2){ var d2=JSON.parse(saved2); PARENT.plan=d2.plan||"Free"; PARENT.children=d2.children||[]; PARENT.name=d2.name||fn2; }
-  }catch(e){}
+  }catch(e){ console.warn(e); }
   var nav2=$$("nav-parent-dash"); if(nav2) nav2.style.display="flex";
   closeLoginModal();
   var land2=$$("s-land"); if(land2) land2.classList.remove("active");
@@ -469,62 +533,63 @@ async function loginParent(){
 }
 
 async function loginStudent(){
-  var fn=$$("l-fn")?$$("l-fn").value.trim():"";
-  var gr=$$("l-grade")?$$("l-grade").value:"";
   var email=$$("l-email")?$$("l-email").value.trim():"";
   var password=$$("l-password")?$$("l-password").value:"";
-  if(!fn){ showToast("Please enter your first name!"); return; }
-  if(!gr){ showToast("Please select your grade!"); return; }
-  if(!email||email.indexOf("@")<1){ showToast("Please enter your email address!"); return; }
+  if(!isValidEmail(email)){ showToast("Please enter a valid email address!"); return; }
   if(!password){ showToast("Please enter your password!"); return; }
   S.xp=0; S.level=1; S.streak=0; S.coins=0;
   var loginBtn=document.querySelector("#login-tab-student .btn-sun");
   if(loginBtn){ loginBtn.textContent="Signing in..."; loginBtn.disabled=true; }
-  if(window.firebaseLogin){
-    try{
-      await window.firebaseLogin(email, password);
-      var data=await window.loadProgress();
-      if(data){
-        S.xp=data.xp||0; S.level=data.level||1;
-        S.streak=data.streak||0; S.coins=data.coins||0;
-        fn=data.displayName||fn;
-        // Restore linkCode from Firestore
-        if(data.linkCode){
-          S.linkCode=data.linkCode;
-        } else {
-          // Existing users: generate and save linkCode now
-          var newCode=Math.floor(100000+Math.random()*900000).toString();
-          S.linkCode=newCode;
-          try{ await window.saveProgress(S.xp,S.coins,S.level,S.streak,newCode); }catch(e){}
-        }
-      }
-      closeLoginModal();
-      enterApp(fn, (parseInt(gr)||7)+"th Grade", parseInt(gr)||7, false);
-      showToast("Welcome back, "+fn.split(" ")[0]+"! Progress loaded! 🎉");
-      return;
-    }catch(e){
-      var msg=e.message||"";
-      if(msg.indexOf("invalid-credential")>-1||msg.indexOf("wrong-password")>-1) showToast("Wrong email or password. Please try again.");
-      else showToast("Login failed: "+msg.replace("Firebase: ","").split(" (")[0]);
-      if(loginBtn){ loginBtn.textContent="🚀 Go to My Dashboard"; loginBtn.disabled=false; }
-      return;
-    }
+  if(!window.firebaseLogin){
+    showToast("Still loading — please try again in a moment.");
+    if(loginBtn){ loginBtn.textContent="🚀 Go to My Dashboard"; loginBtn.disabled=false; }
+    return;
   }
   try{
-    var saved=localStorage.getItem("mc_"+fn.toLowerCase()+"_"+gr);
-    if(saved){ var d=JSON.parse(saved); S.xp=d.xp||0; S.level=d.level||1; S.streak=d.streak||0; S.coins=d.coins||0; }
-  }catch(e){}
-  closeLoginModal();
-  enterApp(fn, gr+"th Grade", parseInt(gr)||7, false);
-  showToast("Welcome back, "+fn+"!");
+    await window.firebaseLogin(email, password);
+    // Name and grade come from the stored profile, never from the login form.
+    var data=await window.loadProgress();
+    var fn="Player", gradeNum=7;
+    if(data){
+      S.xp=data.xp||0; S.level=data.level||1;
+      S.streak=data.streak||0; S.coins=data.coins||0;
+      fn=data.displayName||data.name||fn;
+      gradeNum=parseInt(data.grade)||gradeNum;
+      if(data.linkCode){
+        S.linkCode=data.linkCode;
+      } else {
+        // Existing users predating linkCode: generate and persist one now
+        var newCode=Math.floor(100000+Math.random()*900000).toString();
+        S.linkCode=newCode;
+        try{ await window.saveProgress(S.xp,S.coins,S.level,S.streak,newCode); }
+        catch(e){ console.warn("Could not persist linkCode:", e); }
+      }
+    }
+    closeLoginModal();
+    enterApp(fn, gradeLabel(gradeNum), gradeNum, false);
+    showToast("Welcome back, "+fn.split(" ")[0]+"! Progress loaded! 🎉");
+  }catch(e){
+    var msg=e.message||"";
+    if(msg.indexOf("invalid-credential")>-1||msg.indexOf("wrong-password")>-1) showToast("Wrong email or password. Please try again.");
+    else showToast("Login failed: "+msg.replace("Firebase: ","").split(" (")[0]);
+  }finally{
+    if(loginBtn){ loginBtn.textContent="🚀 Go to My Dashboard"; loginBtn.disabled=false; }
+  }
 }
 
 function logout(){
   saveSession();
+  // Actually sign out of Firebase and stop the presence heartbeat —
+  // previously neither was called, leaving the auth session and the 25s
+  // presence writes running after "logout" (account-mixing risk on shared devices).
+  if(window.stopPresence){ try{ window.stopPresence(); }catch(e){ console.warn(e); } }
+  if(window.firebaseLogout){ window.firebaseLogout().catch(function(e){ console.warn("Sign-out failed:", e); }); }
   // Reset student state
   S.name=""; S.grade=""; S.gradeNum=0; S.xp=0; S.level=1; S.streak=0; S.coins=0; S.isPreview=false;
-  // Reset parent state
-  PARENT.isLoggedIn=false;
+  S.linkCode="";
+  // Reset parent state fully (was only isLoggedIn, leaking name/email/children
+  // to the next user of a shared device)
+  PARENT.name=""; PARENT.email=""; PARENT.plan="Free"; PARENT.isLoggedIn=false; PARENT.children=[];
   // Hide parent nav
   var parentNav=$$("nav-parent-dash"); if(parentNav) parentNav.style.display="none";
   // Switch back to landing page
@@ -792,6 +857,7 @@ function renderOppList(){
 }
 
 function sendChallengeInvite(name,emoji,bg,winRate){
+  name = escapeHtml(name); // display names are user-controlled
   // Show invite dialog
   var overlay=document.createElement("div");
   overlay.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:500;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px)";
@@ -848,8 +914,8 @@ window.botBattleActive = false;
 // Pick a question for the battle
 window.pickBattleQuestion = function(){
   var gradeNum = S.gradeNum || 7;
-  var band = QUESTION_BANK[gradeBand(gradeNum)];
-  if(!band){ band = QUESTION_BANK["grades_6_8"]; }
+  var band = getBank()[gradeBand(gradeNum)];
+  if(!band){ band = getBank()["grades_6_8"]; }
   var topics = Object.keys(band);
   // Try up to 20 times to find unused question
   for(var att=0; att<20; att++){
@@ -862,10 +928,10 @@ window.pickBattleQuestion = function(){
       return { q: qObj.q, opts: qObj.a, a: qObj.a[qObj.c] };
     }
   }
-  // Fallback — just pick random
-  var topic = topics[0];
-  var qObj = band[topic][0];
-  return { q: qObj.q, opts: qObj.a, a: qObj.a[qObj.c] };
+  // Fallback — just pick the first question of the first topic
+  var fbTopic = topics[0];
+  var fbQ = band[fbTopic][0];
+  return { q: fbQ.q, opts: fbQ.a, a: fbQ.a[fbQ.c] };
 };
 
 // Render live players in Challenge Arena
@@ -912,11 +978,11 @@ window.renderLivePlayers = function(players){
       card.innerHTML = "<div class='opp-left'>"
         + "<div style='position:relative'>"
         + "<div class='opp-ava' style='background:linear-gradient(135deg,#1C3A6E,#06D6A0);color:#fff;font-weight:900'>"
-        + (p.avatar || (p.name ? p.name[0] : "?")) + "</div>"
+        + escapeHtml(p.avatar || (p.name ? p.name[0] : "?")) + "</div>"
         + "<div style='position:absolute;bottom:0;right:0;width:11px;height:11px;border-radius:50%;"
         + "background:var(--mint);border:2px solid var(--dark2)'></div></div>"
-        + "<div><div class='opp-name'>" + p.name + "</div>"
-        + "<div class='opp-grade'>" + gradeLabel + (p.inBattle ? " · In Battle" : "") + "</div></div></div>"
+        + "<div><div class='opp-name'>" + escapeHtml(p.name) + "</div>"
+        + "<div class='opp-grade'>" + escapeHtml(gradeLabel) + (p.inBattle ? " · In Battle" : "") + "</div></div></div>"
         + "<div class='opp-right'>" + rightHtml + "</div>";
       // Attach click handler safely — no inline eval
       if(!p.inBattle){
@@ -972,8 +1038,8 @@ window.showIncomingChallenge = function(fromUid, fromName, fromGrade, callback){
   overlay.innerHTML = "<div style='background:linear-gradient(135deg,#1C3A6E,#0D1F3C);border:2px solid var(--sun);border-radius:24px;padding:32px;max-width:380px;width:90%;text-align:center'>"
     + "<div style='font-size:16px;letter-spacing:2px;color:var(--mint);font-weight:700;margin-bottom:8px'>INCOMING CHALLENGE</div>"
     + "<div style='font-size:52px;margin-bottom:12px'>⚔️</div>"
-    + "<div style='font-family:Fredoka One,cursive;font-size:24px;color:var(--sun);margin-bottom:4px'>"+fromName+"</div>"
-    + "<div style='font-size:13px;color:var(--text2);margin-bottom:4px'>"+(fromGrade ? fromGrade+"th Grade" : "")+" · wants to battle you!</div>"
+    + "<div style='font-family:Fredoka One,cursive;font-size:24px;color:var(--sun);margin-bottom:4px'>"+escapeHtml(fromName)+"</div>"
+    + "<div style='font-size:13px;color:var(--text2);margin-bottom:4px'>"+(fromGrade ? escapeHtml(String(fromGrade))+"th Grade" : "")+" · wants to battle you!</div>"
     + "<div style='font-size:28px;font-weight:900;color:var(--sun);margin:16px 0' id='challenge-countdown'>"+countdown+"</div>"
     + "<div style='background:rgba(255,255,255,0.08);border-radius:100px;height:5px;overflow:hidden;margin-bottom:20px'>"
     + "<div id='incoming-prog' style='width:100%;height:100%;background:linear-gradient(90deg,var(--mint),var(--sun));transition:width 20s linear'></div></div>"
@@ -1215,7 +1281,7 @@ function nextBattleRound(bs){
   if(!bs||bs.round>=bs.qs.length){ endBattle(bs); return; }
   var q=bs.qs[bs.round];
   var rEl=$$("b-round"); if(rEl) rEl.textContent="ROUND "+(bs.round+1)+" of "+bs.qs.length;
-  bs.timeLeft=30; clearInterval(bs.timer);
+  bs.timeLeft=30; clearInterval(bs.timer); currentBattleTimer=null;
   updateBTimer(bs);
   bs.timer=setInterval(function(){
     bs.timeLeft--; updateBTimer(bs);
@@ -1308,7 +1374,7 @@ function searchPlayers(queryStr){
       if(matches.length===0){
         var d=document.createElement("div");
         d.style.cssText="color:var(--text2);font-size:13px;padding:12px;text-align:center";
-        d.innerHTML="<div style='font-size:24px;margin-bottom:6px'>&#x1F50D;</div>No registered students found for <strong>"+queryStr+"</strong><br><span style='font-size:11px'>Only MathCrown members appear in search</span>";
+        d.innerHTML="<div style='font-size:24px;margin-bottom:6px'>&#x1F50D;</div>No registered students found for <strong>"+escapeHtml(queryStr)+"</strong><br><span style='font-size:11px'>Only MathCrown members appear in search</span>";
         resultsEl.appendChild(d);
         return;
       }
@@ -1332,12 +1398,12 @@ function searchPlayers(queryStr){
         row.innerHTML="<div style='position:relative'>"
           +"<div style='width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#1C3A6E,#06D6A0);"
           +"display:flex;align-items:center;justify-content:center;font-weight:900;color:#fff;font-size:15px'>"
-          +p.avatar+"</div>"
+          +escapeHtml(p.avatar)+"</div>"
           +(p.online?"<div style='position:absolute;bottom:0;right:0;width:10px;height:10px;border-radius:50%;background:"+(isBusy?"var(--coral)":"var(--mint)")+";border:2px solid var(--dark2)'></div>":"")
           +"</div>"
           +"<div style='flex:1;min-width:0'>"
-          +"<div style='font-size:14px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>"+p.name+"</div>"
-          +"<div style='font-size:11px;margin-top:2px'>"+statusDot+" &middot; "+gradeLabel+" &middot; Level "+p.level+"</div>"
+          +"<div style='font-size:14px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>"+escapeHtml(p.name)+"</div>"
+          +"<div style='font-size:11px;margin-top:2px'>"+statusDot+" &middot; "+escapeHtml(gradeLabel)+" &middot; Level "+escapeHtml(String(p.level))+"</div>"
           +"</div>"
           +"<button class='"+btnClass+"' "+(isBusy?"disabled":"")
           +" style='flex-shrink:0'>"+btnLabel+"</button>";
@@ -1542,7 +1608,7 @@ async function sendMsg(){
   if(!input||!chat) return;
   var msg=input.value.trim(); if(!msg) return;
   input.value="";
-  chat.innerHTML+="<div class='chat-msg chat-user'><div class='chat-who chat-who-user'>You</div>"+msg+"</div>";
+  chat.innerHTML+="<div class='chat-msg chat-user'><div class='chat-who chat-who-user'>You</div>"+escapeHtml(msg)+"</div>";
   var thinking=document.createElement("div"); thinking.className="chat-msg chat-bot";
   thinking.innerHTML="<div class='chat-who chat-who-bot'>Axiom</div><span style='color:var(--text2)'>Thinking...</span>";
   chat.appendChild(thinking); chat.scrollTop=chat.scrollHeight;
@@ -1556,7 +1622,7 @@ async function sendMsg(){
     });
     var d=await r.json();
     var reply=((d.content||[{text:"I am offline right now!"}])[0].text||"");
-    thinking.innerHTML="<div class='chat-who chat-who-bot'>Axiom</div>"+reply;
+    thinking.innerHTML="<div class='chat-who chat-who-bot'>Axiom</div>"+escapeHtml(reply);
   }catch(e){
     thinking.innerHTML="<div class='chat-who chat-who-bot'>Axiom</div>Axiom is taking a break! Try again soon.";
   }
@@ -1567,7 +1633,7 @@ async function sendMsg(){
 function renderPractice(){
   var el=$$("topic-picker"); if(!el) return;
   el.innerHTML="";
-  var band=QUESTION_BANK[gradeBand(S.gradeNum)];
+  var band=getBank()[gradeBand(S.gradeNum)];
   Object.keys(band).forEach(function(t){
     var card=document.createElement("div"); card.className="card skill-card"; card.style.cursor="pointer";
     card.setAttribute("data-topic",t);
@@ -1583,7 +1649,7 @@ async function startPractice(topic){
   pa.style.display="block"; pa.scrollIntoView({behavior:"smooth"});
   practiceSession={qs:[],idx:0,correct:0,loading:true};
   var wrap=$$("practice-q-wrap"); if(wrap) wrap.innerHTML="<div style='text-align:center;padding:32px'>Loading "+topic+" questions...</div>";
-  var band=QUESTION_BANK[gradeBand(S.gradeNum)];
+  var band=getBank()[gradeBand(S.gradeNum)];
   var qs=(band[topic]||[]).map(function(q){ return {q:q.q,a:q.a,c:q.c,topic:topic,src:"Question Bank",ai:false,explanation:""}; });
   var aiQs=await genAIQuestions(S.gradeNum,3,"practice");
   if(aiQs) qs=qs.concat(aiQs);
@@ -1793,9 +1859,9 @@ function buildChildCard(child, isDemo){
   var actHtml="";
   (child.activity||[]).forEach(function(a){ actHtml+="<div class='activity-row'><div class='activity-dot' style='background:"+a.color+"'></div><div style='flex:1'>"+a.txt+"</div><div style='font-size:11px;color:var(--text2)'>"+a.time+"</div></div>"; });
   card.innerHTML="<div class='child-card-header'>"
-    +"<div class='child-ava' style='background:linear-gradient(135deg,#1C3A6E,#06D6A0)'>"+child.name[0]+"</div>"
-    +"<div style='flex:1'><div style='font-size:16px;font-weight:800'>"+child.name+demoTag+"</div>"
-    +"<div style='font-size:12px;color:var(--text2)'>"+child.grade+" - Level "+child.level+" - "+ageNote+"</div></div></div>"
+    +"<div class='child-ava' style='background:linear-gradient(135deg,#1C3A6E,#06D6A0)'>"+escapeHtml(child.name[0])+"</div>"
+    +"<div style='flex:1'><div style='font-size:16px;font-weight:800'>"+escapeHtml(child.name)+demoTag+"</div>"
+    +"<div style='font-size:12px;color:var(--text2)'>"+escapeHtml(child.grade)+" - Level "+escapeHtml(String(child.level))+" - "+ageNote+"</div></div></div>"
     +"<div class='child-stats'>"
     +"<div class='child-stat'><div class='child-stat-val'>"+child.xp.toLocaleString()+"</div><div class='child-stat-lbl'>XP</div></div>"
     +"<div class='child-stat'><div class='child-stat-val'>"+child.coins.toLocaleString()+"</div><div class='child-stat-lbl'>MathCoins</div></div>"
@@ -1846,7 +1912,7 @@ function linkChildAccount(){
       d.children=PARENT.children;
       localStorage.setItem(pKey,JSON.stringify(d));
     }
-  }catch(e){}
+  }catch(e){ console.warn(e); }
   closeLinkChildModal();
   renderParentDash();
   showToast(fn+" linked to your dashboard!");
@@ -1864,7 +1930,7 @@ async function submitParentSignup(){
   var selCard=modal?modal.querySelector(".plan-card.sel"):null;
   if(selCard){ var pn=selCard.querySelector(".plan-name"); if(pn) plan=pn.textContent.trim(); }
   if(!firstName){ showToast("Please enter your first name!"); return; }
-  if(!email||email.indexOf("@")<1){ showToast("Please enter a valid email!"); return; }
+  if(!isValidEmail(email)){ showToast("Please enter a valid email!"); return; }
   var btn=modal?modal.querySelector("#tab-parent .btn-mint"):null;
   if(btn){ btn.textContent="Sending..."; btn.disabled=true; }
   PARENT.name=firstName+(lastName?" "+lastName:""); PARENT.email=email; PARENT.plan=plan; PARENT.isLoggedIn=true;
@@ -1872,7 +1938,7 @@ async function submitParentSignup(){
   try{
     var pKey="mc_parent_"+email.toLowerCase().replace(/[^a-z0-9]/g,"");
     localStorage.setItem(pKey,JSON.stringify({name:PARENT.name,email:email,plan:plan,children:[]}));
-  }catch(e){}
+  }catch(e){ console.warn(e); }
   var sent=await sendToWeb3Forms({subject:"New Parent Signup - "+plan,name:PARENT.name,email:email,message:"NEW PARENT | Name: "+PARENT.name+" | Email: "+email+" | Phone: "+(phone||"N/A")+" | Plan: "+plan});
   var tabParent=$$("tab-parent");
   if(tabParent){
@@ -1904,7 +1970,7 @@ async function joinWaitlist(){
   var nameEl=$$("wl-name"), emailEl=$$("wl-email"), gradeEl=$$("wl-grade");
   var name=nameEl?nameEl.value.trim():"", email=emailEl?emailEl.value.trim():"", grade=gradeEl?gradeEl.value:"";
   if(!name){ showToast("Please enter your name!"); return; }
-  if(!email||email.indexOf("@")<1){ showToast("Please enter a valid email!"); return; }
+  if(!isValidEmail(email)){ showToast("Please enter a valid email!"); return; }
   if(!grade){ showToast("Please select your childs grade!"); return; }
   var wlBtn=document.querySelector(".waitlist-form .btn-sun");
   if(wlBtn){ wlBtn.textContent="Joining..."; wlBtn.disabled=true; }
@@ -1913,7 +1979,7 @@ async function joinWaitlist(){
   if(box){
     var div=document.createElement("div"); div.style.cssText="text-align:center;padding:20px";
     div.innerHTML="<div style='font-size:48px;margin-bottom:16px'>You are In!</div>"
-      +"<div style='font-size:24px;font-weight:800;color:var(--sun);margin-bottom:10px'>You are on the list, "+name+"!</div>"
+      +"<div style='font-size:24px;font-weight:800;color:var(--sun);margin-bottom:10px'>You are on the list, "+escapeHtml(name)+"!</div>"
       +"<div style='color:var(--text2);font-size:14px;line-height:1.8;margin-bottom:16px'>"+(sent?"Your spot is confirmed! We will email "+email+" at launch.":"You are on the list! We will reach out to "+email+" at launch.")+"</div>"
       +"<span class='badge b-sun'>On the founding list</span> <span class='badge b-mint'>Price locked forever</span>";
     var peekBtn=document.createElement("button"); peekBtn.className="btn btn-ghost btn-sm"; peekBtn.style.marginTop="12px"; peekBtn.style.display="block"; peekBtn.textContent="Take a Peek Inside";
@@ -2115,9 +2181,9 @@ document.addEventListener("DOMContentLoaded",function(){
 // Verify question bank loaded after 2 seconds
 // Check question bank loaded — retry up to 10 seconds
 (function checkBank(attempts){
-  if(window.QUESTION_BANK && Object.keys(window.QUESTION_BANK).length >= 5){
+  if((FIXED_BANK && Object.keys(FIXED_BANK).length >= 5) || (window.QUESTION_BANK && Object.keys(window.QUESTION_BANK).length >= 5)){
     var total=0;
-    Object.values(QUESTION_BANK).forEach(function(t){Object.values(t).forEach(function(a){total+=a.length;});});
+    Object.values(FIXED_BANK||window.QUESTION_BANK).forEach(function(t){Object.values(t).forEach(function(a){total+=a.length;});});
     console.log("✅ Question bank: "+total+" questions loaded");
   } else if(attempts > 0){
     setTimeout(function(){ checkBank(attempts-1); }, 1000);
@@ -2227,4 +2293,5 @@ Object.assign(window, {
   updateMusicProgress,
   updateMusicUI,
   S, PARENT, MUSIC, session, practiceSession,
+  upgradeToPlan, isValidEmail, gradeLabel, escapeHtml,
 });

@@ -37,7 +37,7 @@
       grade: grade || "",
       linkCode: linkCode,
       xp: 0, coins: 0, level: 1, streak: 0,
-      createdAt: new Date()
+      createdAt: serverTimestamp()
     });
     return cred.user;
   };
@@ -69,7 +69,8 @@
     return onSnapshot(q, snapshot => {
       const leaders = snapshot.docs.map((d, i) => ({
         rank: i + 1, name: d.data().displayName,
-        xp: d.data().xp, level: d.data().level
+        xp: d.data().xp, level: d.data().level,
+        grade: d.data().grade
       }));
       callback(leaders);
     });
@@ -321,51 +322,10 @@
     });
   };
 
-  // ── EXISTING FUNCTIONS ────────────────────────────────────────
-  window.firebaseSignUp = async function(email, password, displayName, role, grade) {
-    const cred = await createUserWithEmailAndPassword(auth, email, password);
-    await setDoc(doc(db, "users", cred.user.uid), {
-      name: displayName, displayName, email, role,
-      grade: grade || "",
-      xp: 0, coins: 0, level: 1, streak: 0,
-      createdAt: serverTimestamp()
-    });
-    return cred.user;
-  };
-
-  window.firebaseLogin = async function(email, password) {
-    const cred = await signInWithEmailAndPassword(auth, email, password);
-    return cred.user;
-  };
-
-  window.firebaseLogout = function() { return signOut(auth); };
-
-  window.saveProgress = async function(xp, coins, level, streak, linkCode) {
-    const user = auth.currentUser;
-    if (!user) return;
-    const upd = { xp, coins, level, streak };
-    if (linkCode) upd.linkCode = linkCode;
-    await updateDoc(doc(db, "users", user.uid), upd);
-  };
-
-  window.loadProgress = async function() {
-    const user = auth.currentUser;
-    if (!user) return null;
-    const snap = await getDoc(doc(db, "users", user.uid));
-    return snap.exists() ? snap.data() : null;
-  };
-
-  window.startLeaderboard = function(callback) {
-    const q = query(collection(db, "users"), orderBy("xp", "desc"), limit(20));
-    return onSnapshot(q, snapshot => {
-      const leaders = snapshot.docs.map((d, i) => ({
-        rank: i+1, name: d.data().displayName,
-        xp: d.data().xp, level: d.data().level,
-        grade: d.data().grade
-      }));
-      callback(leaders);
-    });
-  };
+  // (Former duplicate firebaseSignUp/firebaseLogin/firebaseLogout/saveProgress/
+  //  loadProgress/startLeaderboard definitions removed — the canonical versions
+  //  above are the only ones. The duplicate signUp silently dropped the linkCode
+  //  field, which broke parent-child linking for every new account.)
 
   onAuthStateChanged(auth, async (user) => {
     if (user) {

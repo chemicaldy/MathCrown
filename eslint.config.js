@@ -22,6 +22,8 @@ export default [
         URL: "readonly",
         Audio: "readonly",
         CustomEvent: "readonly",
+        Blob: "readonly",
+        prompt: "readonly",
       },
     },
     rules: {
