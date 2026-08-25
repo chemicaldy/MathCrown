@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "staging": "mathcrown-staging",
+    "production": "mathchamp-adbd6"
+  }
+}

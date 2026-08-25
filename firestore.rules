@@ -1,0 +1,14 @@
+rules_version = '2';
+
+// Placeholder: deny everything by default.
+// Phase 4 of the rebuild replaces this with the full ruleset
+// (users/presence/challenges/battles/leaderboard/entitlements/linkCodes).
+// Do NOT deploy to production until the old direct-write client is retired —
+// see docs/RUNBOOK.md cutover ordering.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

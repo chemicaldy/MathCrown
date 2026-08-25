@@ -1,0 +1,32 @@
+{
+  "name": "mathcrown",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MathCrown — K-12 competitive math platform",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "bank:convert": "node scripts/convert-bank.mjs",
+    "bank:fix": "node scripts/fix-bank.mjs",
+    "bank:validate": "node scripts/validate-bank.mjs",
+    "bank:report": "node scripts/report-bank.mjs",
+    "emulators": "firebase emulators:start",
+    "test:rules": "firebase emulators:exec --only firestore \"vitest run tests/rules\""
+  },
+  "dependencies": {
+    "firebase": "^10.14.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.9.0",
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "eslint": "^9.9.0",
+    "firebase-tools": "^13.35.1",
+    "vite": "^5.4.8",
+    "vitest": "^2.1.9"
+  }
+}

@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+functions/node_modules/
+
+# Build output
+dist/
+
+# Local env & secrets — NEVER commit real secrets.
+# .env.staging / .env.production hold only public Firebase web config.
+.env
+.env.local
+.env.*.local
+*-service-account*.json
+serviceAccountKey*.json
+
+# Firebase emulator/debug artifacts
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+pubsub-debug.log
+emulator-data/
+
+# Test artifacts
+coverage/
+
+# Editor/OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
