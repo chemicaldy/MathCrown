@@ -205,13 +205,9 @@ var COIN_GUIDE = [
   {a:"Tournament win",             c:"100-500 coins",i:"TW"}
 ];
 
-var TOURNAMENTS = [
-  {n:"5th Grade Arithmetic Cup",    date:"March 30, 2026", prize:"$200",  spots:"428/500", color:"card-mint",   grades:"Grades 4-5"},
-  {n:"Middle School Geometry Bowl", date:"April 15, 2026", prize:"$350",  spots:"211/300", color:"card-sky",    grades:"Grades 6-8"},
-  {n:"High School Pre-Calc Sprint", date:"May 1, 2026",    prize:"$750",  spots:"89/200",  color:"card-purple", grades:"Grades 9-12"},
-  {n:"Elementary Fun Math Blitz",   date:"May 15, 2026",   prize:"$150",  spots:"320/400", color:"card-sun",    grades:"Grades 1-3"},
-  {n:"National Calculus Challenge", date:"June 1, 2026",   prize:"$1000", spots:"45/100",  color:"card-coral",  grades:"Grades 11-12"}
-];
+// (TOURNAMENTS demo listing removed — the page shows an honest coming-soon
+//  state until real tournaments exist; the old list showed past dates with
+//  fake registration counts and a Register button that only fired a toast.)
 
 var QUICK_PROMPTS = [
   {t:"Explain fractions",     emoji:"F"},
@@ -256,8 +252,7 @@ var SOURCES = [
   {n:"STAAR Released Tests", icon:"S",   cnt:"20+"},
   {n:"SAT Practice Tests",   icon:"SAT", cnt:"20+"},
   {n:"AP Calculus AB/BC",    icon:"AP",  cnt:"15+"},
-  {n:"AP Statistics",        icon:"AP",  cnt:"10+"},
-  {n:"Claude AI (Live)",     icon:"AI",  cnt:"unlimited"}
+  {n:"AP Statistics",        icon:"AP",  cnt:"10+"}
 ];
 
 // ── UTILITIES ──────────────────────────────────────────
@@ -332,10 +327,36 @@ function resetModalInputs(modalId){
   m.querySelectorAll("input").forEach(function(i){ if(i.type!=="checkbox"&&i.type!=="radio") i.value=""; else i.checked=false; });
   m.querySelectorAll("select").forEach(function(s){ s.selectedIndex=0; });
 }
-// Paid plans are gated until server-side Stripe checkout + entitlements ship.
-// (The old client-side "checkout" granted plans for free from localStorage.)
-function upgradeToPlan(_planKey){
-  showToast("💳 Paid plans are coming soon — enjoy MathCrown free for now!", 3500);
+// Server-side Stripe checkout. Until the Stripe secrets/prices are
+// configured, the function answers failed-precondition and this shows the
+// honest "coming soon" message — nothing grants premium for free. (The old
+// client-side "checkout" granted plans free from localStorage.)
+async function upgradeToPlan(planKey){
+  if(!window.callFn||!window.auth||!window.auth.currentUser){
+    showToast("Create a free account first, then upgrade any time!",3500);
+    return;
+  }
+  try{
+    var res=await window.callFn("createCheckoutSession",{ plan: planKey });
+    if(res&&res.url){ window.location.href=res.url; return; }
+    showToast("💳 Paid plans are coming soon — enjoy MathCrown free for now!",3500);
+  }catch(e){
+    var code=e&&e.code?String(e.code):"";
+    if(code.indexOf("failed-precondition")>-1) showToast("💳 Paid plans are coming soon — enjoy MathCrown free for now!",3500);
+    else if(code.indexOf("unauthenticated")>-1) showToast("Sign in first, then upgrade any time!");
+    else showToast("Checkout is unavailable right now — please try again later.");
+  }
+}
+
+// Reads the authoritative plan from the ID token claim set by the Stripe
+// webhook. localStorage never decides entitlements.
+async function loadPlanFromClaims(){
+  try{
+    if(!window.auth||!window.auth.currentUser) return "Free";
+    var t=await window.auth.currentUser.getIdTokenResult();
+    var plan=t.claims&&t.claims.plan?String(t.claims.plan):"free";
+    return plan==="free"?"Free":plan.charAt(0).toUpperCase()+plan.slice(1);
+  }catch(e){ console.warn(e); return "Free"; }
 }
 
 function selectPlan(el){
@@ -520,47 +541,33 @@ async function loginParent(){
   if(!password){ showToast("Please enter your password!"); return; }
   var loginBtn=document.querySelector("#login-tab-parent .btn-mint");
   if(loginBtn){ loginBtn.textContent="Signing in..."; loginBtn.disabled=true; }
-  if(window.firebaseLogin){
-    try{
-      await window.firebaseLogin(email, password);
-      var fn=email.split("@")[0];
-      PARENT.name=fn; PARENT.email=email; PARENT.isLoggedIn=true;
-      try{
-        var pKey="mc_parent_"+email.toLowerCase().replace(/[^a-z0-9]/g,"");
-        var saved=localStorage.getItem(pKey);
-        if(saved){ var d=JSON.parse(saved); PARENT.plan=d.plan||"Free"; PARENT.children=d.children||[]; PARENT.name=d.name||fn; }
-      }catch(e){ console.warn(e); }
-      var nav=$$("nav-parent-dash"); if(nav) nav.style.display="flex";
-      closeLoginModal();
-      var land=$$("s-land"); if(land) land.classList.remove("active");
-      var app=$$("s-app"); if(app) app.classList.add("active");
-      showMobNav(true); showMusicBtn(true);
-      goPage("parentdash",$$("nav-parent-dash"),false);
-      showToast("Welcome back, "+PARENT.name.split(" ")[0]+"! Here is your parent dashboard.");
-      return;
-    }catch(e){
-      var msg=e.message||"";
-      if(msg.indexOf("invalid-credential")>-1||msg.indexOf("wrong-password")>-1) showToast("Wrong email or password. Please try again.");
-      else showToast("Login failed: "+msg.replace("Firebase: ","").split(" (")[0]);
-      if(loginBtn){ loginBtn.textContent="👨‍👩‍👧 Go to Parent Dashboard"; loginBtn.disabled=false; }
+  if(!window.firebaseLogin){
+    showToast("Still loading — please try again in a moment.");
+    if(loginBtn){ loginBtn.textContent="👨‍👩‍👧 Go to Parent Dashboard"; loginBtn.disabled=false; }
+    return;
+  }
+  try{
+    await window.firebaseLogin(email, password);
+    // Identity and children come from Firestore — the old version trusted a
+    // localStorage blob for the plan and child list (trivially forgeable).
+    var data=await window.loadProgress();
+    if(!data||data.role!=="parent"){
+      showToast("That's a student account — use the Student tab to log in!");
+      if(window.firebaseLogout) window.firebaseLogout().catch(function(e){ console.warn(e); });
       return;
     }
+    PARENT.name=data.displayName||data.name||email.split("@")[0];
+    PARENT.email=email; PARENT.plan="Free"; PARENT.isLoggedIn=true; PARENT.children=[];
+    closeLoginModal();
+    enterParentDashboard();
+    showToast("Welcome back, "+PARENT.name.split(" ")[0]+"! Here is your parent dashboard.");
+  }catch(e){
+    var msg=e.message||"";
+    if(msg.indexOf("invalid-credential")>-1||msg.indexOf("wrong-password")>-1) showToast("Wrong email or password. Please try again.");
+    else showToast("Login failed: "+msg.replace("Firebase: ","").split(" (")[0]);
+  }finally{
+    if(loginBtn){ loginBtn.textContent="👨‍👩‍👧 Go to Parent Dashboard"; loginBtn.disabled=false; }
   }
-  // Fallback
-  var fn2=email.split("@")[0];
-  PARENT.name=fn2; PARENT.email=email; PARENT.isLoggedIn=true;
-  try{
-    var pKey2="mc_parent_"+email.toLowerCase().replace(/[^a-z0-9]/g,"");
-    var saved2=localStorage.getItem(pKey2);
-    if(saved2){ var d2=JSON.parse(saved2); PARENT.plan=d2.plan||"Free"; PARENT.children=d2.children||[]; PARENT.name=d2.name||fn2; }
-  }catch(e){ console.warn(e); }
-  var nav2=$$("nav-parent-dash"); if(nav2) nav2.style.display="flex";
-  closeLoginModal();
-  var land2=$$("s-land"); if(land2) land2.classList.remove("active");
-  var app2=$$("s-app"); if(app2) app2.classList.add("active");
-  showMobNav(true); showMusicBtn(true);
-  goPage("parentdash",$$("nav-parent-dash"),false);
-  showToast("Welcome back, "+PARENT.name.split(" ")[0]+"!");
 }
 
 async function loginStudent(){
@@ -711,7 +718,7 @@ async function loadTrivia(){
   session.loading=true;
   clearInterval(triviaTimer);
   var arena=$$("trivia-arena");
-  if(arena) arena.innerHTML="<div style='text-align:center;padding:32px'><div style='font-size:32px;margin-bottom:12px'>Loading questions...</div><div style='color:var(--text2)'>AI + curated sources</div></div>";
+  if(arena) arena.innerHTML="<div style='text-align:center;padding:32px'><div style='font-size:32px;margin-bottom:12px'>Loading questions...</div><div style='color:var(--text2)'>From curated sources</div></div>";
   var total=session.mode==="trivia"?3:session.mode==="practice"?5:session.mode==="challenge"?10:15;
   var qs=[];
   var aiQs=await genAIQuestions(S.gradeNum, Math.ceil(total*0.6), session.mode);
@@ -723,22 +730,13 @@ async function loadTrivia(){
   renderQuestion();
 }
 
-async function genAIQuestions(gradeN, count, mode){
-  var band=gradeN<=3?"1-3":gradeN<=5?"4-5":gradeN<=8?"6-8":gradeN<=10?"9-10":"11-12";
-  var topicMap={"1-3":"Addition,Subtraction,Place Value","4-5":"Fractions,Decimals,Percentages","6-8":"Linear Equations,Geometry,Statistics","9-10":"Quadratic Equations,Trigonometry,Functions","11-12":"Derivatives,Integrals,AP Statistics"};
-  var prompt="Generate "+count+" math questions for grade "+gradeN+" on topics: "+topicMap[band]+". Return JSON array only: [{topic,question,choices:[A,B,C,D],correct,explanation,source}]";
-  try{
-    var r=await fetch("https://api.anthropic.com/v1/messages",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:2500,messages:[{role:"user",content:prompt}]})
-    });
-    var d=await r.json();
-    var raw=((d.content||[{text:"[]"}])[0].text||"[]").replace(/```json|```/g,"").trim();
-    return JSON.parse(raw).map(function(q){
-      return {q:q.question,a:q.choices,c:typeof q.correct==="number"?q.correct:0,topic:q.topic,explanation:q.explanation||"",src:q.source||"AI Generated",ai:true};
-    });
-  }catch(e){ return null; }
+// AI-generated questions are retired for now: the old client-side Anthropic
+// call never worked (no key, CORS) and silently failed on every session,
+// wasting a network round-trip. The validated 19k-question bank is the
+// source of truth; a server-side generator can return later as a callable
+// that writes verified questions with answer-map entries.
+async function genAIQuestions(_gradeN, _count, _mode){
+  return null;
 }
 
 function renderQuestion(){
@@ -1470,14 +1468,13 @@ function renderLeaderboard(){
 // ── TOURNAMENTS ────────────────────────────────────────
 function renderTournaments(){
   var el=$$("tourn-list"); if(!el) return;
-  var html="";
-  TOURNAMENTS.forEach(function(t){
-    html+="<div class='t-card "+t.color+"'><div class='t-card-row'>"
-      +"<div><div class='t-name'>"+t.n+"</div><div class='t-meta'>"+t.date+" - "+t.spots+" - "+t.grades+"</div></div>"
-      +"<div><div class='t-prize'>"+t.prize+"</div><div class='t-pplace'>1st place</div></div>"
-      +"</div></div>";
-  });
-  el.innerHTML=html;
+  el.innerHTML="<div class='card card-sun' style='text-align:center;padding:36px 20px'>"
+    +"<div style='font-size:48px;margin-bottom:12px'>🏆</div>"
+    +"<div style='font-family:Fredoka One,cursive;font-size:22px;color:var(--sun);margin-bottom:8px'>Tournaments are coming soon!</div>"
+    +"<div style='color:var(--text2);font-size:14px;line-height:1.8;max-width:420px;margin:0 auto'>"
+    +"We're building real national tournaments with verified brackets and prizes. "
+    +"Until then, climb the leaderboard and battle friends in the Challenge Arena!</div>"
+    +"</div>";
 }
 
 // ── AI TUTOR ───────────────────────────────────────────
@@ -1495,6 +1492,13 @@ function renderTutor(){
 
 function askTutor(prompt){ var input=$$("chat-input"); if(input){ input.value=prompt; sendMsg(); } }
 
+// Rolling chat history for tutor context (last few turns, both roles).
+var TUTOR_HISTORY = [];
+
+// Axiom chat goes through the askTutor Cloud Function — the API key lives
+// server-side. (The old code called api.anthropic.com straight from the
+// browser with no key at all: it 401'd every time, and "fixing" it
+// client-side would have published the key to the world.)
 async function sendMsg(){
   var input=$$("chat-input"), chat=$$("chat-box");
   if(!input||!chat) return;
@@ -1505,18 +1509,25 @@ async function sendMsg(){
   thinking.innerHTML="<div class='chat-who chat-who-bot'>Axiom</div><span style='color:var(--text2)'>Thinking...</span>";
   chat.appendChild(thinking); chat.scrollTop=chat.scrollHeight;
   try{
-    var r=await fetch("https://api.anthropic.com/v1/messages",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:800,
-        system:"You are Axiom, the AI math coach for MathCrown at mymathcrown.com — the K-12 competitive math platform. Student: "+S.name+", "+S.grade+". Keep responses to 3-5 sentences. Be encouraging and clear.",
-        messages:[{role:"user",content:msg}]})
+    if(!window.callFn) throw new Error("not-ready");
+    var res=await window.callFn("askTutor",{
+      message: msg,
+      history: TUTOR_HISTORY.slice(-8),
+      grade: S.gradeNum,
+      name: S.name ? S.name.split(" ")[0] : ""
     });
-    var d=await r.json();
-    var reply=((d.content||[{text:"I am offline right now!"}])[0].text||"");
+    var reply=(res&&res.reply)||"I'm not sure how to answer that — try rephrasing?";
+    TUTOR_HISTORY.push({role:"user",content:msg},{role:"assistant",content:reply});
+    if(TUTOR_HISTORY.length>16) TUTOR_HISTORY=TUTOR_HISTORY.slice(-16);
     thinking.innerHTML="<div class='chat-who chat-who-bot'>Axiom</div>"+escapeHtml(reply);
   }catch(e){
-    thinking.innerHTML="<div class='chat-who chat-who-bot'>Axiom</div>Axiom is taking a break! Try again soon.";
+    var code=e&&e.code?String(e.code):"";
+    var friendly=code.indexOf("resource-exhausted")>-1
+      ? (e.message||"You've used today's Axiom questions — see you tomorrow!")
+      : code.indexOf("unauthenticated")>-1
+        ? "Sign in to chat with Axiom!"
+        : "Axiom is taking a break! Try again soon.";
+    thinking.innerHTML="<div class='chat-who chat-who-bot'>Axiom</div>"+escapeHtml(friendly);
   }
   chat.scrollTop=chat.scrollHeight;
 }
@@ -1791,32 +1802,38 @@ function renderPrizeQueue(){
   });
 }
 
-function linkChildAccount(){
-  var fn=$$("lc-fn")?$$("lc-fn").value.trim():"";
-  var gr=$$("lc-grade")?$$("lc-grade").value:"";
-  var dob=$$("lc-dob")?$$("lc-dob").value:"";
-  if(!fn){ showToast("Please enter child first name!"); return; }
-  if(!gr){ showToast("Please select child grade!"); return; }
-  var age=13;
-  if(dob){ var bd=new Date(dob),td=new Date(); age=td.getFullYear()-bd.getFullYear(); }
-  var child={name:fn,grade:gr+"th Grade",age:age,level:1,xp:0,coins:0,streak:0,wins:0,topics_weak:["Starting out"],topics_strong:["Arithmetic"],activity:[{txt:"Account linked by parent",time:"Just now",color:"var(--mint)"}]};
-  PARENT.children.push(child);
-  // Save updated children list
+// Links a real student account via the 6-digit code on their profile —
+// server-verified through the linkChild function. (The old flow asked the
+// parent to re-type the child's name/grade/DOB and stored a fabricated
+// local-only record.)
+async function linkChildAccount(){
+  var codeEl=$$("lc-code");
+  var code=codeEl?codeEl.value.trim():"";
+  if(!/^\d{6}$/.test(code)){ showToast("Enter the 6-digit code from your child's profile."); return; }
+  if(!window.callFn){ showToast("Still loading — please try again in a moment."); return; }
+  var btn=document.querySelector("#link-child-modal .btn-mint");
+  if(btn){ btn.textContent="Linking..."; btn.disabled=true; }
   try{
-    if(PARENT.email){
-      var pKey="mc_parent_"+PARENT.email.toLowerCase().replace(/[^a-z0-9]/g,"");
-      var saved=localStorage.getItem(pKey);
-      var d=saved?JSON.parse(saved):{};
-      d.children=PARENT.children;
-      localStorage.setItem(pKey,JSON.stringify(d));
-    }
-  }catch(e){ console.warn(e); }
-  closeLinkChildModal();
-  renderParentDash();
-  showToast(fn+" linked to your dashboard!");
+    var res=await window.callFn("linkChild",{ code: code });
+    closeLinkChildModal();
+    refreshChildren();
+    showToast((res&&res.name?res.name:"Your child")+" is linked to your dashboard! 🎉",3500);
+  }catch(e){
+    var codeStr=e&&e.code?String(e.code):"";
+    if(codeStr.indexOf("not-found")>-1) showToast("That code doesn't match any student. Double-check and try again.");
+    else if(codeStr.indexOf("already-exists")>-1) showToast("That student is already linked to another parent account.");
+    else if(codeStr.indexOf("permission-denied")>-1) showToast("Only parent accounts can link children.");
+    else showToast("Could not link right now — please try again.");
+  }finally{
+    if(btn){ btn.textContent="✅ Link Child Account"; btn.disabled=false; }
+  }
 }
 
 // ── PARENT SIGNUP ──────────────────────────────────────
+// Creates a REAL parent account: Firebase Auth user + server-provisioned
+// parent profile with a role claim. (The old version created no account at
+// all — it stored a localStorage flag, silently discarded the typed
+// password, and granted whichever paid plan card was clicked, for free.)
 async function submitParentSignup(){
   var modal=$$("signup-modal");
   var inputs=modal?modal.querySelectorAll("#tab-parent .form-input"):[];
@@ -1824,44 +1841,83 @@ async function submitParentSignup(){
   var lastName=inputs[1]?inputs[1].value.trim():"";
   var email=inputs[2]?inputs[2].value.trim():"";
   var phone=inputs[3]?inputs[3].value.trim():"";
-  var plan="Free";
-  var selCard=modal?modal.querySelector(".plan-card.sel"):null;
-  if(selCard){ var pn=selCard.querySelector(".plan-name"); if(pn) plan=pn.textContent.trim(); }
+  var password=$$("p-password")?$$("p-password").value:"";
   if(!firstName){ showToast("Please enter your first name!"); return; }
   if(!isValidEmail(email)){ showToast("Please enter a valid email!"); return; }
+  if(!password||password.length<6){ showToast("Password must be at least 6 characters!"); return; }
+  if(!window.firebaseCreateAuthUser||!window.callFn){ showToast("Still loading — please try again in a moment."); return; }
+  var fullName=firstName+(lastName?" "+lastName:"");
   var btn=modal?modal.querySelector("#tab-parent .btn-mint"):null;
-  if(btn){ btn.textContent="Sending..."; btn.disabled=true; }
-  PARENT.name=firstName+(lastName?" "+lastName:""); PARENT.email=email; PARENT.plan=plan; PARENT.isLoggedIn=true;
-  // Save parent session to localStorage for return visits
+  if(btn){ btn.textContent="Creating account..."; btn.disabled=true; }
   try{
-    var pKey="mc_parent_"+email.toLowerCase().replace(/[^a-z0-9]/g,"");
-    localStorage.setItem(pKey,JSON.stringify({name:PARENT.name,email:email,plan:plan,children:[]}));
-  }catch(e){ console.warn(e); }
-  var sent=await sendToWeb3Forms({subject:"New Parent Signup - "+plan,name:PARENT.name,email:email,message:"NEW PARENT | Name: "+PARENT.name+" | Email: "+email+" | Phone: "+(phone||"N/A")+" | Plan: "+plan});
-  var tabParent=$$("tab-parent");
-  if(tabParent){
-    var html="<div style='text-align:center;padding:20px 10px'>"
-      +"<div style='font-size:52px;margin-bottom:14px'>Success!</div>"
-      +"<div style='font-size:26px;font-weight:800;color:var(--sun);margin-bottom:12px'>You are Registered!</div>"
-      +"<div style='color:var(--text2);font-size:14px;line-height:1.9;margin-bottom:20px'>"
-      +"Welcome, <strong style='color:var(--mint)'>"+firstName+"</strong>!<br><br>"
-      +"<span class='badge b-sun' style='font-size:12px'>Plan: "+plan+"</span><br><br>"
-      +"Your MathCrown account is now active!<br><br>"
-      +"<span style='color:var(--mint)'>"+(sent?"We will email "+email+" at launch!":"We have your details and will be in touch!")+"</span><br><br>"
-      +"<strong style='color:var(--mint)'>Founding Family:</strong> Your "+plan+" price is locked forever."
-      +"</div>"
-      +"<div style='display:flex;gap:8px;justify-content:center;flex-wrap:wrap'></div></div>";
-    tabParent.innerHTML=html;
-    var btnDiv=tabParent.querySelector("div:last-child div:last-child");
-    if(btnDiv){
-      var eb=document.createElement("button"); eb.className="btn btn-sun btn-sm"; eb.textContent="Explore the App";
-      eb.addEventListener("click",function(){ closeModal(); previewApp(); }); btnDiv.appendChild(eb);
-      var cb=document.createElement("button"); cb.className="btn btn-ghost btn-sm"; cb.textContent="Close";
-      cb.addEventListener("click",closeModal); btnDiv.appendChild(cb);
+    await window.firebaseCreateAuthUser(email, password);
+    await window.callFn("createParentAccount",{ name: fullName, phone: phone||"" });
+    // Refresh the ID token so the parent role claim is live immediately.
+    if(window.auth&&window.auth.currentUser) await window.auth.currentUser.getIdToken(true);
+    PARENT.name=fullName; PARENT.email=email; PARENT.plan="Free"; PARENT.isLoggedIn=true; PARENT.children=[];
+    sendToWeb3Forms({subject:"New Parent Signup",name:fullName,email:email,
+      message:"NEW PARENT | Name: "+fullName+" | Email: "+email+" | Phone: "+(phone||"N/A")}).catch(function(e){ console.warn(e); });
+    var tabParent=$$("tab-parent");
+    if(tabParent){
+      tabParent.innerHTML="<div style='text-align:center;padding:20px 10px'>"
+        +"<div style='font-size:52px;margin-bottom:14px'>🎉</div>"
+        +"<div style='font-size:26px;font-weight:800;color:var(--sun);margin-bottom:12px'>Account Created!</div>"
+        +"<div style='color:var(--text2);font-size:14px;line-height:1.9;margin-bottom:20px'>"
+        +"Welcome, <strong style='color:var(--mint)'>"+escapeHtml(firstName)+"</strong>!<br><br>"
+        +"Link your child from the dashboard using the 6-digit code shown on their profile."
+        +"</div>"
+        +"<div style='display:flex;gap:8px;justify-content:center;flex-wrap:wrap' id='p-signup-btns'></div></div>";
+      var btnDiv=$$("p-signup-btns");
+      if(btnDiv){
+        var db2=document.createElement("button"); db2.className="btn btn-mint btn-sm"; db2.textContent="Go to Dashboard";
+        db2.addEventListener("click",function(){ closeModal(); enterParentDashboard(); }); btnDiv.appendChild(db2);
+        var cb=document.createElement("button"); cb.className="btn btn-ghost btn-sm"; cb.textContent="Close";
+        cb.addEventListener("click",closeModal); btnDiv.appendChild(cb);
+      }
     }
+    showToast("Welcome, "+firstName+"! Your parent account is ready.",4000);
+  }catch(e){
+    var msg=e.message||"";
+    if(msg.indexOf("email-already-in-use")>-1) showToast("That email already has an account — try logging in instead.");
+    else showToast("Signup failed: "+msg.replace("Firebase: ","").split(" (")[0]);
+  }finally{
+    if(btn){ btn.textContent="Create Parent Account"; btn.disabled=false; }
   }
+}
+
+// Shared post-auth entry into the parent dashboard.
+function enterParentDashboard(){
   var nav=$$("nav-parent-dash"); if(nav) nav.style.display="flex";
-  showToast(sent?"Registered! We will email "+email+"!":"Registered, "+firstName+"! We will be in touch!",4000);
+  var land=$$("s-land"); if(land) land.classList.remove("active");
+  var app=$$("s-app"); if(app) app.classList.add("active");
+  showMobNav(true); showMusicBtn(true);
+  goPage("parentdash",$$("nav-parent-dash"),false);
+  refreshChildren();
+  loadPlanFromClaims().then(function(p){
+    PARENT.plan=p;
+    var e=$$("p-dash-plan"); if(e) e.textContent="Plan: "+p;
+  });
+}
+
+// Loads linked children from Firestore into PARENT.children (card shape).
+function refreshChildren(){
+  if(!window.loadChildren) return;
+  window.loadChildren().then(function(docs){
+    PARENT.children=(docs||[]).map(childDocToCard);
+    renderParentDash();
+  }).catch(function(e){ console.warn("loadChildren:", e); });
+}
+
+function childDocToCard(d){
+  return {
+    uid:d.uid,
+    name:d.displayName||d.name||"Student",
+    grade:gradeLabel(d.grade),
+    level:d.level||1, xp:d.xp||0, coins:d.coins||0,
+    streak:d.streak||0, wins:d.wins||0,
+    topics_weak:[], topics_strong:[],
+    activity:[]
+  };
 }
 
 async function joinWaitlist(){

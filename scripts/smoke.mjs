@@ -3,6 +3,13 @@
 // need a live Firebase backend. Run: node scripts/smoke.mjs
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+
+// Local sandbox pins Chromium at /opt/pw-browsers; CI installs Playwright's
+// own browser (or sets CHROMIUM_PATH). undefined → Playwright default lookup.
+const chromiumPath =
+  process.env.CHROMIUM_PATH ||
+  (existsSync("/opt/pw-browsers/chromium") ? "/opt/pw-browsers/chromium" : undefined);
 
 const PORT = 4173;
 const previewProc = spawn("npx", ["vite", "preview", "--port", String(PORT), "--strictPort"], {
@@ -27,8 +34,7 @@ const failures = [];
 const consoleErrors = [];
 try {
   await waitForServer(`http://127.0.0.1:${PORT}/`);
-  // Pinned system Chromium (see repo docs); avoids per-version browser downloads.
-  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+  const browser = await chromium.launch({ executablePath: chromiumPath });
   const page = await browser.newPage();
 
   page.on("pageerror", (err) => failures.push(`pageerror: ${err.message}`));

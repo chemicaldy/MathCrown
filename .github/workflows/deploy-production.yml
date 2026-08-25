@@ -1,0 +1,45 @@
+name: Deploy production
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Create a GitHub "production" environment with required reviewers so
+    # every production deploy needs an explicit approval click.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd functions && npm ci
+
+      - name: Build (production config)
+        run: npm run build:production
+
+      - name: Authenticate service account
+        run: |
+          echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_PROD }}' > "$RUNNER_TEMP/sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> "$GITHUB_ENV"
+
+      # Order matters on first cutover: functions and the new hosting build
+      # go out together with the rules — see docs/RUNBOOK.md before running
+      # this against a production project still serving the legacy site.
+      - name: Deploy functions + rules + hosting to production
+        run: |
+          npx firebase-tools deploy \
+            --only functions,firestore:rules,firestore:indexes,hosting \
+            --project production --non-interactive --force

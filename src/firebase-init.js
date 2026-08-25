@@ -55,6 +55,24 @@
     return cred.user;
   };
 
+  // Creates only the Auth user (no profile doc) — parent profiles are
+  // provisioned by the createParentAccount function, since rules restrict
+  // self-service doc creation to students.
+  window.firebaseCreateAuthUser = async function(email, password) {
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    return cred.user;
+  };
+
+  // Children linked to the signed-in parent (rules permit this query via the
+  // parentUid clause of the users read rule).
+  window.loadChildren = async function() {
+    const user = auth.currentUser;
+    if (!user) return [];
+    const snap = await getDocs(query(
+      collection(db, "users"), where("parentUid", "==", user.uid)));
+    return snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+  };
+
   window.firebaseLogout = function() { return signOut(auth); };
 
   // (saveProgress removed: direct client writes of xp/coins/level/streak are

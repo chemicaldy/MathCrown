@@ -434,33 +434,16 @@
   <div class="modal">
     <button class="modal-close" onclick="closeLinkChildModal()">✕</button>
     <div class="modal-title">Link a Child Account 👦</div>
-    <div class="modal-sub">Connect your child's MathCrown profile to your parent dashboard</div>
+    <div class="modal-sub">Enter the 6-digit link code from your child's MathCrown profile</div>
     <div class="form-group">
-      <label class="form-label">Child's First Name</label>
-      <input class="form-input" type="text" id="lc-fn" placeholder="e.g. Josh">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Child's Last Name</label>
-      <input class="form-input" type="text" id="lc-ln" placeholder="e.g. Johnson">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Child's Grade</label>
-      <select class="form-select" id="lc-grade">
-        <option value="">Select grade...</option>
-        <option value="1">1st Grade</option><option value="2">2nd Grade</option>
-        <option value="3">3rd Grade</option><option value="4">4th Grade</option>
-        <option value="5">5th Grade</option><option value="6">6th Grade</option>
-        <option value="7">7th Grade</option><option value="8">8th Grade</option>
-        <option value="9">9th Grade</option><option value="10">10th Grade</option>
-        <option value="11">11th Grade</option><option value="12">12th Grade</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Child's Date of Birth</label>
-      <input class="form-input" type="date" id="lc-dob">
+      <label class="form-label">Child's Link Code</label>
+      <input class="form-input" type="text" id="lc-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+             placeholder="e.g. 483920" style="font-family:monospace;font-size:22px;letter-spacing:8px;text-align:center">
     </div>
     <div class="consent">
-      <strong>🔒 Privacy Note:</strong> This links your child's session data to your parent view. Full persistent linking requires Firebase (coming soon). For now this creates a local profile you can monitor this session.
+      <strong>🔒 Where's the code?</strong> Your child can find their permanent 6-digit code on their
+      MathCrown home page ("Share with your parent"). Linking lets you see their real progress —
+      XP, streaks, wins, and practice history.
     </div>
     <button class="btn btn-mint" style="width:100%;color:var(--dark)" onclick="linkChildAccount()">
       ✅ Link Child Account
@@ -881,38 +864,9 @@
       <div class="page-title">🏆 Tournaments</div>
       <div class="page-sub">Compete nationally · Win real prizes funded by sponsors · Grades 1–12</div>
 
-      <div class="featured-tournament">
-        <div class="feat-bg">🏆</div>
-        <div class="feat-badge">
-          <span class="badge b-red">🔴 REGISTERING NOW</span>
-          <span class="badge b-sun" style="margin-left:6px">📅 April 1, 2026</span>
-        </div>
-        <div class="feat-title">🥇 National Algebra Championship</div>
-        <div class="feat-desc">Compete against 7th & 8th graders nationwide in a 3-round elimination tournament. Questions drawn from our full hybrid bank (AI + SAT/AP/STAAR). Top 10 win real prizes.</div>
-        <div class="prize-row">
-          <div class="prize-box">
-            <div class="prize-amt" style="color:var(--sun)">$500</div>
-            <div class="prize-place">🥇 1st Place Gift Card</div>
-          </div>
-          <div class="prize-box">
-            <div class="prize-amt" style="color:#c0c0c0">$250</div>
-            <div class="prize-place">🥈 2nd Place</div>
-          </div>
-          <div class="prize-box">
-            <div class="prize-amt" style="color:#cd7f32">$100</div>
-            <div class="prize-place">🥉 3rd Place</div>
-          </div>
-          <div class="prize-box">
-            <div class="prize-amt" style="color:var(--sky)">529</div>
-            <div class="prize-place">🎓 College Savings Option</div>
-          </div>
-        </div>
-        <div class="tourn-meta">
-          <span style="font-size:13px;color:var(--text2)">👥 1,240 registered</span>
-          <span style="font-size:13px;color:var(--text2)">🏫 Open to all 7th–8th graders</span>
-          <button class="btn btn-sun btn-sm" onclick="showToast('✅ Registered! Good luck! 🏆')">Register Free →</button>
-        </div>
-      </div>
+      <!-- (Fake "National Algebra Championship" card removed: it displayed
+           invented registration counts and a Register button that did
+           nothing. tourn-list below renders the honest coming-soon state.) -->
 
       <!-- Reward structure info -->
       <div class="card card-mint" style="margin-bottom:20px;padding:20px">
@@ -1338,7 +1292,7 @@
       <p style="color:#06D6A0;font-weight:700;margin-bottom:8px">7. Intellectual Property</p>
       <p style="margin-bottom:20px">All MathCrown content — including the name, logo, crown design, question bank, and software — is protected by copyright and trademark law. You may not reproduce or distribute any content without written permission.</p>
       <p style="color:#06D6A0;font-weight:700;margin-bottom:8px">8. Subscriptions and Payments</p>
-      <p style="margin-bottom:20px">MathCrown offers a free tier and optional paid plans. Refunds are available within 7 days of first purchase. Subscription fees are non-refundable after the 7-day window.</p>
+      <p style="margin-bottom:20px">MathCrown currently offers a free tier. Optional paid plans are coming soon; when they launch, refunds will be available within 7 days of first purchase, and subscription fees will be non-refundable after the 7-day window.</p>
       <p style="color:#06D6A0;font-weight:700;margin-bottom:8px">9. Disclaimers</p>
       <p style="margin-bottom:20px">MathCrown is provided as-is. We do not guarantee uninterrupted access or specific educational outcomes. MathCrown is a supplemental learning tool, not a substitute for formal education.</p>
       <p style="color:#06D6A0;font-weight:700;margin-bottom:8px">10. Termination</p>

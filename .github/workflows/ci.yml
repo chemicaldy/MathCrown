@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd functions && npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Validate question bank
+        run: |
+          node scripts/convert-bank.mjs
+          node scripts/fix-bank.mjs
+          node scripts/validate-bank.mjs
+          node scripts/build-answer-map.mjs
+          git diff --exit-code data/ functions/data/ \
+            || (echo "::error::Generated bank files are stale — run the bank pipeline and commit" && exit 1)
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Firestore rules tests
+        run: npm run test:rules
+
+      - name: Functions integration tests
+        run: npm run test:functions
+
+      - name: Build
+        run: npm run build
+
+      - name: XSS grep gate — no user-name interpolation without escapeHtml
+        run: |
+          ! grep -nE 'innerHTML.*\+ *(p\.name|child\.name|fromName|data\.displayName)[^A-Za-z]' src/ -r \
+            || (echo "::error::Unescaped user data flowing into innerHTML" && exit 1)
+
+      - name: Browser smoke test
+        run: |
+          npx playwright install --with-deps chromium
+          npm run smoke
+
+  # Optional PR preview on Firebase Hosting (staging project).
+  # Requires the FIREBASE_SERVICE_ACCOUNT_STAGING secret; skipped until set.
+  preview:
+    if: github.event_name == 'pull_request'
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Check secret
+        id: has-secret
+        run: |
+          if [ -n "${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build (staging config)
+        if: steps.has-secret.outputs.ok == 'true'
+        run: |
+          npm ci
+          npm run build:staging
+      - name: Deploy preview channel
+        if: steps.has-secret.outputs.ok == 'true'
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+          projectId: mathcrown-staging
+          expires: 7d

@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:staging": "vite build --mode staging",
+    "build:production": "vite build --mode production",
+    "smoke": "node scripts/smoke.mjs",
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",
